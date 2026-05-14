@@ -181,6 +181,8 @@ class MeshServerGUI:
             row, textvariable=self.dtype_var,
             values=["bfloat16", "float16", "float32"], state="readonly", width=18,
         ).pack(side=LEFT)
+        Label(row, text="(leave on bfloat16 unless you know why you're changing it)",
+              fg="#666", anchor="w").pack(side=LEFT, padx=8)
 
         # Row: ComfyUI path (read-only display; sourced from env / probed)
         row = Frame(self.root)
