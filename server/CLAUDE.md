@@ -22,7 +22,8 @@ The slim load is the load-bearing architectural property — it's what makes thi
 .
 ├── CLAUDE.md                ← you are here
 ├── README.md                ← human-facing version of this brief
-├── requirements.txt         ← `pip install -r` for the standalone server
+├── install.bat              ← ONE-SHOT INSTALLER (venv + ComfyUI + deps)
+├── requirements.txt         ← what install.bat installs
 ├── mesh_server.py           ← the server (slim-loads via safetensors.safe_open)
 ├── mesh_server_gui.py       ← Tkinter wrapper around the server
 ├── codec.py                 ← tensor ↔ NVENC bitstream (per-channel quant + HEVC)
@@ -47,43 +48,30 @@ The slim load is the load-bearing architectural property — it's what makes thi
 
 ## Setup tasks (in order)
 
-### 1. Verify the environment
+### 1. Run install.bat (does most of the work for you)
 
 ```
 cd /d <this folder>
-python install_check.py
+install.bat
 ```
 
-Reports OK / MISSING / BROKEN for every dependency. Read it, fix anything MISSING before continuing. Covers: torch, safetensors, einops, CUDA, ComfyUI source, nvenc-pframe, the model file.
+That one command: creates `.venv`, clones ComfyUI to `..\ComfyUI` if missing, installs ComfyUI's requirements (torch with CUDA), installs the server's extras (`cuda-bindings`), and runs `install_check.py` at the end. Re-run safely; every step is idempotent.
 
-### 2. Get ComfyUI's source importable
+After `install.bat` reports "Install complete" and `install_check.py` shows everything OK, move on to step 2.
 
-The server imports `comfy.sd.load_diffusion_model_state_dict` to handle fp8 quantization correctly. The UI isn't needed; only the `comfy/` Python package needs to be importable.
+**If you need a different CUDA-version torch wheel** (e.g. cu128 specifically), abort `install.bat` and do the manual path: create the venv, `pip install torch --index-url https://download.pytorch.org/whl/cu128`, then `pip install -r ..\ComfyUI\requirements.txt && pip install -r requirements.txt`.
 
-```
-git clone https://github.com/comfyanonymous/ComfyUI ../ComfyUI
-pip install -r ../ComfyUI/requirements.txt
-```
+**Critical regardless of path:** the ComfyUI version here should match (or be reasonably close to) the version on the client. The fp8 detection and FLUX implementation evolve; mismatched versions = silent-correctness bugs.
 
-Launchers default to `..\ComfyUI` relative to this folder. Override with `COMFYUI_PATH=C:\path\to\ComfyUI` before launching.
-
-**Critical:** the ComfyUI version here should match (or be reasonably close to) the version on the client. The fp8 detection and FLUX implementation evolve; mismatched versions = silent-correctness bugs.
-
-### 3. Install Python dependencies
+### 2. Confirm the bundled codec loads
 
 ```
-pip install -r requirements.txt
-```
-
-That gives you `torch`, `safetensors`, `einops`, and `cuda-bindings`. The codec wrapper itself is **bundled** at `./nvenc_pframe/` — no separate install. Confirm it loads:
-
-```
-python -c "import nvenc_pframe; print(nvenc_pframe.__file__)"
+.venv\Scripts\python.exe -c "import nvenc_pframe; print(nvenc_pframe.__file__)"
 ```
 
 The `__file__` should point INTO this folder's `nvenc_pframe/__init__.py`, not somewhere in site-packages. If it points elsewhere, an older copy is shadowing — uninstall it (`pip uninstall nvenc-pframe`).
 
-### 4. Smoke-test the server
+### 3. Smoke-test the server
 
 ```
 python smoke_test_server.py --weights flux-2-klein-9b-fp8.safetensors --n-blocks 4
@@ -112,7 +100,7 @@ Reference timing from a 5090: 28.6 ms for 4 blocks (7.2 ms/block). On a 4090 exp
 - `AttributeError: 'NoneType' object has no attribute 'device'` in cast_bias_weight → fp8 metadata not being remapped (should be fixed in current mesh_server.py; verify you're on the latest)
 - CUDA OOM → slim load too generous; lower `--n-blocks`
 
-### 5. Launch the live server
+### 4. Launch the live server
 
 Five launcher variants. Pick the one that matches the deployment:
 
@@ -136,7 +124,7 @@ For the typical case (this host is on the OTHER side of the wire from the ComfyU
 
 The server should end with `[server] listening on 0.0.0.0:7777`.
 
-### 6. Network: tell Peter the IP/port
+### 5. Network: tell Peter the IP/port
 
 The client's Mesh Split FLUX node needs to know how to reach this machine. Two paths:
 

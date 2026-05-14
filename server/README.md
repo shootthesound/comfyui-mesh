@@ -21,7 +21,8 @@ load-bearing property for models too big to fit on either device whole.
 server/
 ├── README.md                   ← this file
 ├── CLAUDE.md                   ← brief for an AI agent doing this side's setup
-├── requirements.txt            ← pip install -r this on the back-half host
+├── install.bat                 ← ONE-SHOT INSTALLER — venv + ComfyUI + deps
+├── requirements.txt            ← what install.bat installs (also for manual use)
 ├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
 ├── mesh_server_gui.py          ← Tkinter wrapper — pick file, set n_blocks, click Start.
 ├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
@@ -46,38 +47,48 @@ drift = silent corruption.
 
 ## Setup on the back-half host
 
-### 1. Install Python dependencies
-
-In whichever venv you'll use:
+### Easy path: one-shot installer
 
 ```
-pip install -r requirements.txt
+install.bat
 ```
 
-That installs `torch`, `safetensors`, `einops`, and `cuda-bindings` —
-everything the standalone server needs. `cuda-bindings` is the one
-dep specifically for the bundled `nvenc_pframe/` codec wrapper (the
-codec source itself is in this folder, no separate install step).
+That single command:
 
-### 2. Get ComfyUI's source on the box
+1. Finds Python (3.10+) on PATH
+2. Creates a local `.venv` in this folder
+3. Upgrades pip + wheel
+4. Clones ComfyUI to `..\ComfyUI` if it's not already there
+5. Installs ComfyUI's requirements (this pulls torch with CUDA — multi-GB,
+   takes a minute or two on a fast connection)
+6. Installs the server's extras (cuda-bindings)
+7. Runs `install_check.py` to confirm everything is wired up
 
-The server imports `comfy.sd.load_diffusion_model_state_dict` to handle
-FLUX's fp8 quantization correctly. You don't need to run ComfyUI's UI;
-only the `comfy/` Python package needs to be importable.
+Re-running `install.bat` is safe — every step is idempotent.
 
-```
-git clone https://github.com/comfyanonymous/ComfyUI ../ComfyUI
-```
+After it finishes, drop your FLUX safetensors into this folder and launch
+the server (see below).
 
-The launchers default to `..\ComfyUI` (i.e. a sibling of the `server/`
-folder). Override with `COMFYUI_PATH=C:\path\to\ComfyUI`.
+### Manual path: do it yourself
 
-**Important:** the ComfyUI version on the back-half host should match
-(or be reasonably close to) the version on the ComfyUI client. The fp8
-detection logic and FLUX implementation evolve; mismatched versions
+If you'd rather control the install yourself (e.g. you already have a
+venv, or you want a different CUDA-version torch wheel):
+
+1. Create / activate a Python 3.10+ venv however you like.
+2. Clone ComfyUI somewhere reachable; set `COMFYUI_PATH=C:\path\to\ComfyUI`
+   if it's not a sibling of this folder.
+3. Install ComfyUI's own requirements (`pip install -r path/to/ComfyUI/requirements.txt`)
+   — this gets torch with the right CUDA build.
+4. `pip install -r requirements.txt` in this folder (adds cuda-bindings
+   on top).
+5. `python install_check.py` to verify.
+
+**Important either way:** the ComfyUI version on the back-half host should
+match (or be reasonably close to) the version on the ComfyUI client. The
+fp8 detection logic and FLUX implementation evolve; mismatched versions
 between the two ends is the most likely silent-correctness bug.
 
-### 3. Drop the model weights here
+### Drop the model weights here
 
 ```
 flux-2-klein-9b-fp8.safetensors   ← 9.4 GB
@@ -85,17 +96,7 @@ flux-2-klein-9b-fp8.safetensors   ← 9.4 GB
 
 Or point the launcher at wherever you keep your checkpoints.
 
-### 4. Run the pre-flight check
-
-```
-python install_check.py
-```
-
-Reports OK / MISSING / BROKEN for: torch, safetensors, einops, CUDA,
-ComfyUI source, nvenc-pframe, the model file. Fix anything MISSING
-before proceeding.
-
-### 5. Smoke-test the model load + forward
+### Smoke-test the model load + forward
 
 ```
 python smoke_test_server.py --weights flux-2-klein-9b-fp8.safetensors --n-blocks 4
