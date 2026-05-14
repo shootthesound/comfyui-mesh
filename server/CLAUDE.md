@@ -27,6 +27,7 @@ The slim load is the load-bearing architectural property — it's what makes thi
 ├── codec.py                 ← tensor ↔ NVENC bitstream (per-channel quant + HEVC)
 ├── protocol.py              ← length-prefixed TCP framing
 ├── vec_io.py                ← FLUX.2 vec/modulation tuple serializer
+├── nvenc_pframe/            ← BUNDLED codec source — no separate install needed
 ├── smoke_test_server.py     ← validates model load + back-half forward
 ├── install_check.py         ← env pre-flight check
 ├── run_server.bat           ← headless launcher, no GPU pinning
@@ -37,7 +38,7 @@ The slim load is the load-bearing architectural property — it's what makes thi
 └── flux-2-klein-9b-fp8.safetensors   ← model weights (9.4 GB), already in place
 ```
 
-`codec.py / protocol.py / vec_io.py` must stay byte-identical to the client-side copies. They're the wire contract. **Do not edit them in isolation** — if they need to change, the change happens on the client first and is mirrored here.
+`codec.py / protocol.py / vec_io.py / nvenc_pframe/` must stay byte-identical to the client-side copies. They're the wire contract. **Do not edit them in isolation** — if they need to change, the change happens on the client first and is mirrored here.
 
 **Your job: get the env right, run the smoke test, then launch the server.**
 
@@ -67,15 +68,16 @@ Launchers default to `..\ComfyUI` relative to this folder. Override with `COMFYU
 
 **Critical:** the ComfyUI version here should match (or be reasonably close to) the version on the client. The fp8 detection and FLUX implementation evolve; mismatched versions = silent-correctness bugs.
 
-### 3. Install nvenc-pframe
+### 3. Confirm nvenc-pframe loads
 
-The private NVENC codec wrapper. Required for `codec_mode=nvenc` requests from the client; optional for `codec_mode=raw`.
+The codec is **bundled in this folder** at `./nvenc_pframe/`. No separate install. It does require one PyPI dep:
 
 ```
-python -c "import nvenc_pframe; print(nvenc_pframe.__version__)"
+pip install cuda-bindings
+python -c "import nvenc_pframe; print(nvenc_pframe.__file__)"
 ```
 
-If missing, it's in `W:/Peter/Documents/Development/NVENC Activations/vortex/` (a `pip install -e` target). If this host doesn't have W: mounted, ask Peter where to find it. **Do not try to reimplement it** — it's the load-bearing IP.
+The `__file__` should point INTO this folder's `nvenc_pframe/__init__.py`, not somewhere in site-packages. If it points elsewhere, an older copy is shadowing — uninstall it (`pip uninstall nvenc-pframe`).
 
 ### 4. Smoke-test the server
 
@@ -159,7 +161,7 @@ If the lines aren't appearing when the client queues a workflow, the problem is 
 ## What NOT to do
 
 - **Do not modify `codec.py`, `protocol.py`, or `vec_io.py`** in isolation. They must stay byte-identical with the client. Fix upstream and re-copy.
-- **Do not try to reimplement nvenc-pframe.** It's private IP. If it's missing, escalate.
+- **Do not try to reimplement or replace the bundled `nvenc_pframe/`.** It's the codec we ship with. If you think it's broken, escalate — don't fork.
 - **Do not load the full model "for safety".** The whole point is slim load — for models too big to fit whole, `--n-blocks N` is the only viable path. Server loads only the LAST N double_blocks plus encoders/modulation needed for ComfyUI's detection (~60-80 MB combined).
 - **Do not refuse QP=28 requests.** That warning was for CFD chaotic dynamics, not diffusion. FLUX's residual stream tolerates QP=28 fine — produces slightly softer images than QP=18, doesn't collapse. Domain-dependent envelope; client picks per-workload.
 - **Do not redistribute the model weights.** Peter's licensed copy; internal use only.
@@ -180,7 +182,7 @@ Once you've got the server humming, Peter takes the client side for A/B comparis
 
 ## Escalate if any of these come up
 
-- nvenc-pframe missing AND not findable on disk (codec demo unreachable; only `raw` mode works)
+- Bundled `nvenc_pframe/` failing to import (likely missing `cuda-bindings` PyPI dep — `pip install cuda-bindings`)
 - ComfyUI version on this host substantially different from the client's (silent-correctness risk)
 - Model file size / tensor count doesn't match expected (9.4 GB / 425 tensors for FLUX.2 Klein 9B fp8)
 - CUDA driver / NVENC SDK version incompatible with what nvenc-pframe expects

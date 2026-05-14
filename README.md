@@ -62,18 +62,23 @@ per generation. Compared to ~280 MB uncompressed.
 
 1. This folder is already at `ComfyUI/custom_nodes/comfyui-mesh/`. Restart
    ComfyUI to pick it up.
-2. Install `nvenc-pframe` into ComfyUI's venv:
+2. The codec (`nvenc_pframe/`) is bundled in this folder — no separate
+   install needed. It does have one runtime dep:
    ```
-   pip install -e /path/to/nvenc-pframe
+   pip install cuda-bindings
    ```
-   Verify with `python -c "import nvenc_pframe"`.
+   Then verify: `python -c "import nvenc_pframe"` (should succeed).
 
 **On the host running the back-half server (e.g. the 4090):**
 
-1. Copy the `server/` folder somewhere convenient (it's self-contained).
+1. Copy the `server/` folder somewhere convenient (it's self-contained —
+   the bundled `nvenc_pframe/` rides along).
 2. Get ComfyUI's `comfy/` package importable. Simplest: clone ComfyUI
    next to the server folder.
-3. Install `nvenc-pframe` (same wheel as the client side).
+3. Install the one external dep:
+   ```
+   pip install torch safetensors einops cuda-bindings
+   ```
 4. Drop your FLUX safetensors checkpoint into the server folder.
 5. Launch:
    - **GUI:** `run_server_gui.bat` — file picker, spinboxes, Start button.
@@ -131,12 +136,21 @@ comfyui-mesh/
 ├── protocol.py                   ← length-prefixed TCP framing
 ├── vec_io.py                     ← FLUX.2 vec/modulation tuple (de)serializer
 ├── smoke_test_codec.py           ← standalone codec roundtrip test
+├── nvenc_pframe/                 ← BUNDLED codec source (no separate install)
+│   ├── __init__.py
+│   └── direct/
+│       ├── backend.py            ← DirectBackend — main entry point
+│       ├── decoder.py            ← cuvid decode wrapper
+│       ├── api.py, structs.py    ← NVENC SDK bindings
+│       ├── _native.py            ← lazy builds the C helper
+│       └── _encode_loop.c        ← compiled on first import (cached under ~/.cache)
 └── server/                       ← deploy folder for the back-half host
     ├── README.md                 ← server-side setup
-    ├── CLAUDE.md                 ← brief for an AI agent doing 4090-side setup
+    ├── CLAUDE.md                 ← brief for an AI agent doing back-half setup
     ├── mesh_server.py            ← slim-load TCP server
     ├── mesh_server_gui.py        ← Tkinter wrapper around the server
     ├── codec.py / protocol.py / vec_io.py    ← mirror of client (byte-identical)
+    ├── nvenc_pframe/             ← bundled codec source (mirror of client copy)
     ├── smoke_test_server.py      ← model-load + back-half-forward validator
     ├── install_check.py          ← env pre-flight check
     └── run_server*.bat           ← five launcher variants (default/gpu0/gpu1/cpu/gui)

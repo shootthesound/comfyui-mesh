@@ -26,6 +26,8 @@ server/
 ├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
 ├── protocol.py                 ← length-prefixed TCP framing
 ├── vec_io.py                   ← FLUX.2 vec/modulation tuple (de)serializer
+├── nvenc_pframe/               ← BUNDLED codec source (no separate install)
+│   └── direct/...              ←   compiles its C helper on first import
 ├── smoke_test_server.py        ← validates model load + back-half forward
 ├── install_check.py            ← env pre-flight (deps + cuda + comfy + weights)
 ├── run_server_gui.bat          ← launch the GUI (recommended for first run)
@@ -35,9 +37,9 @@ server/
 └── run_server_cpu.bat          ← CPU / system-RAM mode (slow; raw codec only)
 ```
 
-Files in `codec.py / protocol.py / vec_io.py` MUST stay byte-identical
-to the client-side copies. They're the wire contract — drift = silent
-corruption.
+Files in `codec.py / protocol.py / vec_io.py / nvenc_pframe/` MUST stay
+byte-identical to the client-side copies. They're the wire contract —
+drift = silent corruption.
 
 ---
 
@@ -48,8 +50,12 @@ corruption.
 In whichever venv you'll use:
 
 ```
-pip install torch safetensors einops
+pip install torch safetensors einops cuda-bindings
 ```
+
+`cuda-bindings` is the only extra dep the bundled `nvenc_pframe/`
+needs. (The codec source is in this folder; no separate `pip install
+nvenc-pframe` step.)
 
 ### 2. Get ComfyUI's source on the box
 
@@ -59,7 +65,6 @@ only the `comfy/` Python package needs to be importable.
 
 ```
 git clone https://github.com/comfyanonymous/ComfyUI ../ComfyUI
-pip install -r ../ComfyUI/requirements.txt
 ```
 
 The launchers default to `..\ComfyUI` (i.e. a sibling of the `server/`
@@ -70,17 +75,7 @@ folder). Override with `COMFYUI_PATH=C:\path\to\ComfyUI`.
 detection logic and FLUX implementation evolve; mismatched versions
 between the two ends is the most likely silent-correctness bug.
 
-### 3. Install nvenc-pframe
-
-The codec wrapper. Required for `codec_mode=nvenc` on the client side;
-optional for `codec_mode=raw`.
-
-```
-pip install -e /path/to/nvenc-pframe
-python -c "import nvenc_pframe; print(nvenc_pframe.__version__)"
-```
-
-### 4. Drop the model weights here
+### 3. Drop the model weights here
 
 ```
 flux-2-klein-9b-fp8.safetensors   ← 9.4 GB
@@ -88,7 +83,7 @@ flux-2-klein-9b-fp8.safetensors   ← 9.4 GB
 
 Or point the launcher at wherever you keep your checkpoints.
 
-### 5. Run the pre-flight check
+### 4. Run the pre-flight check
 
 ```
 python install_check.py
@@ -98,7 +93,7 @@ Reports OK / MISSING / BROKEN for: torch, safetensors, einops, CUDA,
 ComfyUI source, nvenc-pframe, the model file. Fix anything MISSING
 before proceeding.
 
-### 6. Smoke-test the model load + forward
+### 5. Smoke-test the model load + forward
 
 ```
 python smoke_test_server.py --weights flux-2-klein-9b-fp8.safetensors --n-blocks 4

@@ -80,13 +80,14 @@ def main():
         print(f"                    git clone https://github.com/comfyanonymous/ComfyUI ../ComfyUI")
         print(f"                    set COMFYUI_PATH=/path/to/ComfyUI")
 
-    # 5. nvenc-pframe (optional)
+    # 5. nvenc-pframe — bundled in this folder; needs cuda-bindings on PATH
+    sys.path.insert(0, str(here))  # make the bundled subfolder importable
     ok, info = _try("nvenc_pframe")
-    sym = "OK     " if ok else "MISSING"
-    print(f"  nvenc-pframe      {sym} {info}")
+    sym = "OK     " if ok else "BROKEN "
+    print(f"  nvenc-pframe      {sym} {info} (bundled at ./nvenc_pframe/)")
     if not ok:
-        print(f"                    (optional — raw mode works without it; codec mode needs it)")
-        print(f"                    pip install -e /path/to/vortex/")
+        print(f"                    (the bundled package imports cuda-bindings —")
+        print(f"                     install with: pip install cuda-bindings)")
 
     # 6. Model file
     weights = here / "flux-2-klein-9b-fp8.safetensors"
