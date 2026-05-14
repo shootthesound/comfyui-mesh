@@ -1,10 +1,14 @@
 """ComfyUI custom node: FLUX mesh-split rig.
 
 Splits FLUX double_blocks across two machines:
-    - Front half [0..split_index)  runs locally (this 5090)
-    - Back half  [split_index..N)  runs remotely (the 4090 over TCP)
+    - First (total - n_blocks_remote) blocks run locally (this 5090)
+    - Last  n_blocks_remote          blocks run remotely (the 4090 over TCP)
 
-All single_blocks + final layers stay local (smaller, post-double-block).
+User is responsible for setting `n_blocks_remote` here to match the
+server's `--n-blocks` setting. Mismatch produces wrong output, not a
+crash — no handshake validation in v1.
+
+All single_blocks + final layer stay local (smaller, post-double-block).
 
 Wiring uses ComfyUI's built-in transformer_options["patches_replace"]
 mechanism — we register a per-block override callback that, instead of
@@ -43,6 +47,7 @@ _LAST_STATS: dict = {
     "bytes_received": 0,
     "last_call_seconds": 0.0,
     "codec_mode": "n/a",
+    "n_blocks_remote": 0,
     "split_index": -1,
     "blocks_offloaded": 0,
 }
@@ -237,8 +242,8 @@ class MeshSplitFlux:
         return {
             "required": {
                 "model": ("MODEL",),
-                "split_index": ("INT", {"default": 4, "min": 0, "max": 100,
-                                        "tooltip": "Block at which to start running remotely. 0 = entire double-block stack remote."}),
+                "n_blocks_remote": ("INT", {"default": 4, "min": 0, "max": 100,
+                                            "tooltip": "How many of the LAST double_blocks to run on the remote server. MUST match the server's --n-blocks setting. 0 = nothing remote (no-op); 4 on an 8-block model = even half-split; 8 = entire double_block stack remote."}),
                 "remote_host": ("STRING", {"default": "127.0.0.1",
                                            "tooltip": "Hostname or IP of the back-half server (the 4090)."}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535}),
@@ -255,14 +260,20 @@ class MeshSplitFlux:
     CATEGORY = "mesh"
     OUTPUT_NODE = False
 
-    def configure(self, model, split_index, remote_host, remote_port, codec_mode, codec_qp, codec_lossless):
+    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless):
         # Reach into the diffusion model to learn n_double_blocks
         diffusion = model.model.diffusion_model
         n_double_blocks = len(diffusion.double_blocks)
-        if not (0 <= split_index <= n_double_blocks):
+        if not (0 <= n_blocks_remote <= n_double_blocks):
             raise ValueError(
-                f"split_index {split_index} out of range; model has {n_double_blocks} double_blocks"
+                f"n_blocks_remote {n_blocks_remote} out of range; model has {n_double_blocks} double_blocks"
             )
+
+        # Convert "N blocks running remotely" to "intercept at block index
+        # (total - N)" — that's where our patches_replace fires on the
+        # client side. The server is configured with --n-blocks N so its
+        # block 0 is what was originally block split_index.
+        split_index = n_double_blocks - n_blocks_remote
 
         # Open / reuse the client so the user gets a connection error
         # at queue-time rather than mid-sample.
@@ -274,24 +285,27 @@ class MeshSplitFlux:
         # rather than mutating model_options directly so we don't fight
         # the ModelPatcher's copy-on-write semantics.
         m = model.clone()
-        replace_at_split = _make_block_replacement(
-            client, split_index, n_double_blocks, codec_mode, codec_qp, codec_lossless
-        )
-        passthrough = _make_passthrough()
-        m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
-        for i in range(split_index + 1, n_double_blocks):
-            m.set_model_patch_replace(passthrough, "dit", "double_block", i)
+        if n_blocks_remote > 0:
+            replace_at_split = _make_block_replacement(
+                client, split_index, n_double_blocks, codec_mode, codec_qp, codec_lossless
+            )
+            passthrough = _make_passthrough()
+            m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
+            for i in range(split_index + 1, n_double_blocks):
+                m.set_model_patch_replace(passthrough, "dit", "double_block", i)
+        # n_blocks_remote == 0: no patches; entire model runs locally
 
         _LAST_STATS["codec_mode"] = codec_mode
+        _LAST_STATS["n_blocks_remote"] = n_blocks_remote
         _LAST_STATS["split_index"] = split_index
-        _LAST_STATS["blocks_offloaded"] = n_double_blocks - split_index
+        _LAST_STATS["blocks_offloaded"] = n_blocks_remote
         _LAST_STATS["wire_call_count"] = 0
         _LAST_STATS["bytes_sent"] = 0
         _LAST_STATS["bytes_received"] = 0
         _LAST_STATS["last_call_seconds"] = 0.0
 
-        print(f"[mesh] configured split at double_block[{split_index}] of {n_double_blocks}; "
-              f"{n_double_blocks - split_index} blocks running on {remote_host}:{remote_port}; "
+        print(f"[mesh] {n_blocks_remote}/{n_double_blocks} double_blocks running remotely "
+              f"(intercepting at block {split_index}); server={remote_host}:{remote_port}; "
               f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless}")
 
         return (m,)
@@ -313,7 +327,8 @@ class MeshStatus:
         s = _LAST_STATS
         ratio = (s["bytes_sent"] / max(1, s["bytes_received"]))
         msg = (
-            f"split_index={s['split_index']}  blocks_offloaded={s['blocks_offloaded']}\n"
+            f"n_blocks_remote={s.get('n_blocks_remote', s['blocks_offloaded'])}  "
+            f"(intercepting at block {s['split_index']})\n"
             f"codec_mode={s['codec_mode']}\n"
             f"wire_calls={s['wire_call_count']}  "
             f"bytes_sent={s['bytes_sent']/1024/1024:.2f} MB  "

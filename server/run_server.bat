@@ -34,5 +34,18 @@ if exist "%VENV_PY%" (
     echo [run_server] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
-REM ---- 5. Launch ----
-"%PY%" -u "%~dp0mesh_server.py" --weights "%WEIGHTS%" --port %PORT% --bind %BIND% --device cuda:0 --dtype bfloat16
+REM ---- 5. Optional slim-load: how many of the LAST double_blocks to load
+REM       Set N_BLOCKS env var before running, e.g.:
+REM           set N_BLOCKS=4 && run_server.bat
+REM       Must match the client node's `n_blocks_remote` setting.
+REM       Unset = load all double_blocks (full back-half model in VRAM).
+if not "%N_BLOCKS%"=="" (
+    set "N_BLOCKS_ARG=--n-blocks %N_BLOCKS%"
+    echo [run_server] slim load: --n-blocks %N_BLOCKS%
+) else (
+    set "N_BLOCKS_ARG="
+    echo [run_server] full load (N_BLOCKS env var not set)
+)
+
+REM ---- 6. Launch ----
+"%PY%" -u "%~dp0mesh_server.py" --weights "%WEIGHTS%" --port %PORT% --bind %BIND% --device cuda:0 --dtype bfloat16 %N_BLOCKS_ARG%

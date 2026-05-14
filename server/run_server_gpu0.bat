@@ -36,5 +36,14 @@ if exist "%VENV_PY%" (
     echo [run_server] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
-REM ---- 5. Launch ----
-"%PY%" -u "%~dp0mesh_server.py" --weights "%WEIGHTS%" --port %PORT% --bind %BIND% --device cuda:0 --dtype bfloat16
+REM ---- 5. Slim-load via N_BLOCKS env var (optional; defaults to full load) ----
+if not "%N_BLOCKS%"=="" (
+    set "N_BLOCKS_ARG=--n-blocks %N_BLOCKS%"
+    echo [run_server] slim load: --n-blocks %N_BLOCKS%
+) else (
+    set "N_BLOCKS_ARG="
+    echo [run_server] full load (N_BLOCKS env var not set)
+)
+
+REM ---- 6. Launch ----
+"%PY%" -u "%~dp0mesh_server.py" --weights "%WEIGHTS%" --port %PORT% --bind %BIND% --device cuda:0 --dtype bfloat16 %N_BLOCKS_ARG%

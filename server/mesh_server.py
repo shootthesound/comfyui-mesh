@@ -1,15 +1,22 @@
 """Standalone back-half FLUX server for the comfyui-mesh rig.
 
-Runs on the 4090 machine. Loads the FLUX.2 Klein 9B weights, builds
-ALL the double_blocks (we'll use blocks [start_block..end] per request),
-and listens on TCP for forward_double_blocks requests from the 5090
-client.
+Runs on the 4090 machine. Slim-loads only the LAST `--n-blocks`
+double_blocks of a FLUX.2 checkpoint (via safetensors.safe_open —
+never reads the front half from disk, so models too big for either
+GPU still fit on the back-half side). Listens on TCP for
+`forward_double_blocks` requests from the 5090 client.
 
 Usage on the 4090 machine:
     python mesh_server.py \
         --weights /path/to/flux-2-klein-9b-fp8.safetensors \
+        --n-blocks 4 \
         --port 7777 \
         --bind 0.0.0.0
+
+The `--n-blocks` value MUST match the client's `n_blocks_remote`
+setting on the Mesh Split node. Mismatch = wrong output (server still
+runs all its loaded blocks but the activations land at the wrong
+depth in the diffusion stack).
 
 Dependencies on the 4090:
     - torch
@@ -85,33 +92,142 @@ import vec_io
 # Model loading
 # ---------------------------------------------------------------------
 
-def load_flux2_klein(weights_path: Path, device: torch.device, dtype: torch.dtype):
-    """Load the FLUX.2 Klein 9B model via ComfyUI's own loader.
+def load_flux2_klein(
+    weights_path: Path,
+    device: torch.device,
+    dtype: torch.dtype,
+    n_blocks: int | None = None,
+):
+    """Slim-load the back-half of a FLUX.2 checkpoint.
 
-    Returns the inner `Flux` diffusion module (not the ModelPatcher
-    wrapper), already fp8-aware and on `device` in `dtype`.
+    Only the LAST `n_blocks` double_blocks are read from disk. Front-half
+    double_blocks, all single_blocks, and the final_layer are never
+    touched — for models that don't fit on either device whole, this is
+    the load-bearing property.
 
-    Why ComfyUI's loader rather than rolling our own:
-    - The fp8 distilled checkpoint has per-tensor scales (`*.input_scale`,
-      `*.weight_scale`) that the bare `Flux.load_state_dict` doesn't
-      know how to apply. ComfyUI's loader wraps the ops to consume them.
-    - The vec/modulation construction for `global_modulation=True` is
-      done inside `Flux.forward`, so as long as we feed the inner Flux
-      module the same modulated `vec` tuple the front half computed,
-      the per-block forward stays consistent.
+    Reads via `safetensors.safe_open()` so disk I/O is exactly the bytes
+    we keep — no full-model spike in CPU RAM or VRAM at any point.
+
+    Encoders, modulation modules, and pe_embedder are kept (~60-80 MB
+    combined) because ComfyUI's model detector needs them to identify
+    the architecture (e.g. `double_stream_modulation_img.lin.weight` is
+    how it distinguishes FLUX2 from FLUX1). They sit unused on the
+    server side but cost almost nothing.
+
+    If `n_blocks is None` or `n_blocks >= total_double_blocks`, loads
+    every double_block (still skips single_blocks + final_layer).
     """
+    import json
+    from safetensors import safe_open
     import comfy.sd
-
-    print(f"[server] loading FLUX.2 Klein 9B via comfy.sd.load_diffusion_model")
-    model_options = {"dtype": dtype}
-    patcher = comfy.sd.load_diffusion_model(str(weights_path), model_options=model_options)
-    if patcher is None:
-        raise RuntimeError(f"comfy.sd.load_diffusion_model returned None for {weights_path}")
-
-    # Force the model onto the requested device. Normally ComfyUI's
-    # ModelPatcher does this lazily via .patch_model(); we want it
-    # resident now because the server is long-lived.
     import comfy.model_management
+
+    print(f"[server] reading checkpoint header from {weights_path}")
+    with safe_open(str(weights_path), framework="pt", device="cpu") as f:
+        all_keys = list(f.keys())
+        # Pull the safetensors metadata too — comfy.sd uses it to identify
+        # fp8 quant scheme and wrap ops accordingly. Skipping this leaves
+        # *.input_scale / *.weight_scale tensors as "unexpected" keys and
+        # the fp8 ops never bind.
+        metadata = f.metadata() or {}
+
+        # 1. Detect total double_blocks count from key names (header-only,
+        #    no tensor data reads).
+        db_indices = set()
+        for k in all_keys:
+            if k.startswith("double_blocks."):
+                db_indices.add(int(k.split(".")[1]))
+        total_db = (max(db_indices) + 1) if db_indices else 0
+        if total_db == 0:
+            raise RuntimeError(
+                f"no double_blocks.* tensors found in {weights_path} — "
+                f"is this really a FLUX safetensors file?"
+            )
+
+        if n_blocks is None or n_blocks >= total_db:
+            actual_n = total_db
+            drop = 0
+        else:
+            actual_n = n_blocks
+            drop = total_db - n_blocks
+
+        print(f"[server] checkpoint has {total_db} double_blocks; "
+              f"loading {actual_n} (skipping first {drop})")
+
+        # 2. Build the slim state dict by reading ONLY the needed tensors.
+        #    Each .get_tensor() call reads exactly that tensor's bytes
+        #    from disk — no full-file load.
+        sd_slim = {}
+        for k in all_keys:
+            # Server-unused, large: skip entirely (no disk read)
+            if k.startswith("single_blocks.") or k.startswith("final_layer."):
+                continue
+            if k.startswith("double_blocks."):
+                idx = int(k.split(".")[1])
+                if idx < drop:
+                    continue  # front-half block, server doesn't need it
+                # Remap: source double_blocks.{drop+i} -> slim double_blocks.{i}
+                parts = k.split(".")
+                parts[1] = str(idx - drop)
+                new_key = ".".join(parts)
+                sd_slim[new_key] = f.get_tensor(k)
+                continue
+            # Encoders / modulation / pe_embedder / txt_norm — small and
+            # load-bearing for ComfyUI's architecture detection.
+            sd_slim[k] = f.get_tensor(k)
+
+        slim_bytes = sum(t.numel() * t.element_size() for t in sd_slim.values())
+        print(f"[server] slim state dict: {len(sd_slim)} tensors, "
+              f"{slim_bytes/1024/1024/1024:.2f} GB (full would be ~{total_db / actual_n * slim_bytes / 1024/1024/1024:.1f} GB)")
+
+        # 2b. Remap fp8 quantization metadata. _quantization_metadata is a
+        #     JSON-encoded dict of {layer_name: {"format": "float8_e4m3fn", ...}}
+        #     keyed by ORIGINAL layer names (e.g. "double_blocks.4.img_attn.proj").
+        #     Our slim SD has those weights remapped to indices [0..n_blocks),
+        #     so the metadata must remap to match — otherwise comfy.utils.
+        #     convert_old_quants writes `comfy_quant` markers at the original
+        #     indices, the wrapped fp8 Linear at the remapped indices never
+        #     gets its quant config, and forward() finds .weight == None.
+        if "_quantization_metadata" in metadata:
+            qm = json.loads(metadata["_quantization_metadata"])
+            layers = qm.get("layers", {})
+            new_layers = {}
+            for layer_name, cfg in layers.items():
+                if layer_name.startswith("single_blocks.") or layer_name.startswith("final_layer."):
+                    continue  # not on the server
+                if layer_name.startswith("double_blocks."):
+                    parts = layer_name.split(".")
+                    idx = int(parts[1])
+                    if idx < drop:
+                        continue  # front-half block, skipped
+                    parts[1] = str(idx - drop)
+                    new_layers[".".join(parts)] = cfg
+                    continue
+                # Encoder / modulation / etc — keep as-is
+                new_layers[layer_name] = cfg
+            qm["layers"] = new_layers
+            # Don't mutate the safetensors-returned metadata in place;
+            # copy then update.
+            metadata = dict(metadata)
+            metadata["_quantization_metadata"] = json.dumps(qm)
+            print(f"[server] remapped {len(layers)} fp8 layer entries -> {len(new_layers)} for slim model")
+
+    # 3. Hand the slim SD to ComfyUI's loader. Its detector counts
+    #    `double_blocks.*` keys (-> depth=actual_n) and `single_blocks.*`
+    #    keys (-> depth_single_blocks=0), so it builds a slim Flux model.
+    #    fp8 ops binding happens automatically via comfy's normal path.
+    print(f"[server] handing slim state dict to comfy.sd.load_diffusion_model_state_dict")
+    model_options = {"dtype": dtype}
+    patcher = comfy.sd.load_diffusion_model_state_dict(sd_slim, model_options=model_options, metadata=metadata)
+    if patcher is None:
+        raise RuntimeError(
+            "comfy.sd.load_diffusion_model_state_dict returned None for the slim "
+            "state dict. Likely a detection failure — check the checkpoint is a "
+            "real FLUX safetensors file."
+        )
+    # Release CPU-side slim SD before staging to GPU; the patcher already holds refs.
+    sd_slim.clear()
+
     comfy.model_management.load_models_gpu([patcher], force_full_load=True)
 
     diffusion = patcher.model.diffusion_model
@@ -135,14 +251,19 @@ def forward_back_half_double_blocks(
     vec,
     pe: torch.Tensor,
     attn_mask,
-    start_block: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run model.diffusion_model.double_blocks[start_block:] on the
-    given activations. Mirrors the loop in comfy/ldm/flux/model.py
-    (lines 219-249) but only for the back half."""
-    blocks = model.double_blocks
-    for i in range(start_block, len(blocks)):
-        block = blocks[i]
+    """Run ALL of the server's loaded double_blocks.
+
+    With the slim loader the server only has the LAST n_blocks of the
+    original model, remapped to indices [0..n_blocks). The request's
+    `start_block` field (if present) is informational only — server
+    always runs from its own block 0 to block N-1.
+
+    Match-up is the user's responsibility: client `n_blocks_remote`
+    must equal server `--n-blocks`. Mismatch produces wrong output,
+    not a crash.
+    """
+    for block in model.double_blocks:
         img, txt = block(
             img=img,
             txt=txt,
@@ -219,7 +340,9 @@ def serve(model, host: str, port: int, device: torch.device):
                     }, [])
 
                 elif kind == "forward_double_blocks":
-                    start_block = int(header["start_block"])
+                    # start_block in the request is informational only — the
+                    # slim server always runs its full loaded block list.
+                    client_start_block = int(header.get("start_block", 0))
                     t0 = time.time()
                     img, txt, vec, pe, attn_mask = _decode_request_tensors(header, blobs, device)
                     t_decode = time.time() - t0
@@ -228,7 +351,7 @@ def serve(model, host: str, port: int, device: torch.device):
                     img_out, txt_out = forward_back_half_double_blocks(
                         model,
                         img=img, txt=txt, vec=vec, pe=pe,
-                        attn_mask=attn_mask, start_block=start_block,
+                        attn_mask=attn_mask,
                     )
                     t_forward = time.time() - t0
 
@@ -258,7 +381,7 @@ def serve(model, host: str, port: int, device: torch.device):
                         },
                     }
                     protocol.send_message(conn, resp_header, [w.bytes_payload for w in wire_outs])
-                    print(f"[server] forward [{start_block}..{n_double_blocks}): "
+                    print(f"[server] forward {n_double_blocks} blocks (client said start={client_start_block}): "
                           f"decode {t_decode*1000:.1f} ms  fwd {t_forward*1000:.1f} ms  enc {t_encode*1000:.1f} ms  "
                           f"in {sum(len(b) for b in blobs)/1024/1024:.2f} MB  "
                           f"out {sum(len(w.bytes_payload) for w in wire_outs)/1024/1024:.2f} MB")
@@ -282,12 +405,18 @@ def main():
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--dtype", type=str, default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
+    p.add_argument("--n-blocks", type=int, default=None,
+                   help="How many of the LAST double_blocks to load. MUST match "
+                        "the client node's `n_blocks_remote` setting — user is "
+                        "responsible for keeping the two in sync. If omitted, "
+                        "loads every double_block (still skips single_blocks and "
+                        "final_layer; useful when the client's split_index=0).")
     args = p.parse_args()
 
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
     device = torch.device(args.device)
 
-    model = load_flux2_klein(args.weights, device, dtype)
+    model = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
     serve(model, args.bind, args.port, device)
 
 

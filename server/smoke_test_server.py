@@ -48,7 +48,8 @@ import vec_io
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--weights", type=Path, required=True)
-    p.add_argument("--start-block", type=int, default=4)
+    p.add_argument("--n-blocks", type=int, default=4,
+                   help="How many of the LAST double_blocks to load (slim load).")
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--dtype", type=str, default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
@@ -59,9 +60,9 @@ def main():
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
     device = torch.device(args.device)
 
-    print(f"[smoke] loading model")
+    print(f"[smoke] loading model (slim, n_blocks={args.n_blocks})")
     t0 = time.time()
-    model = load_flux2_klein(args.weights, device, dtype)
+    model = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
     print(f"[smoke] model load: {time.time()-t0:.2f}s")
     H = model.params.hidden_size
 
@@ -96,11 +97,11 @@ def main():
     print(f"[smoke] pe shape={tuple(pe.shape)} dtype={pe.dtype}")
 
     # Warm-up
-    print(f"[smoke] warmup forward (start_block={args.start_block})")
+    print(f"[smoke] warmup forward (running all {n_double} loaded blocks)")
     with torch.no_grad():
         img_w, txt_w = forward_back_half_double_blocks(
             model, img=img, txt=txt, vec=vec, pe=pe,
-            attn_mask=None, start_block=args.start_block,
+            attn_mask=None,
         )
     torch.cuda.synchronize()
 
@@ -114,15 +115,14 @@ def main():
             t0 = time.time()
             img_o, txt_o = forward_back_half_double_blocks(
                 model, img=img, txt=txt, vec=vec, pe=pe,
-                attn_mask=None, start_block=args.start_block,
+                attn_mask=None,
             )
             torch.cuda.synchronize()
             timings.append(time.time() - t0)
 
     avg_ms = sum(timings) / n_iters * 1000
-    blocks_run = n_double - args.start_block
     print(f"[smoke] back-half forward: {avg_ms:.1f} ms avg over {n_iters} runs")
-    print(f"[smoke] {blocks_run} blocks at {avg_ms/blocks_run:.1f} ms/block")
+    print(f"[smoke] {n_double} blocks at {avg_ms/n_double:.1f} ms/block")
     print(f"[smoke] img out shape={tuple(img_o.shape)} dtype={img_o.dtype}")
     print(f"[smoke] txt out shape={tuple(txt_o.shape)} dtype={txt_o.dtype}")
     print("[smoke] OK")
