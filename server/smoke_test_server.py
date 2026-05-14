@@ -41,7 +41,7 @@ for cand in _comfy_candidates:
         break
 
 
-from mesh_server import load_flux2_klein, forward_back_half_double_blocks
+from mesh_server import load_flux2_klein, forward_back_half
 import vec_io
 
 
@@ -83,6 +83,11 @@ def main():
         vec = torch.randn(1, H, device=device, dtype=dtype) * 0.3
         print(f"[smoke] using single-tensor vec (global_modulation=False)")
 
+    # vec_orig is the un-modulated tensor that single_stream_modulation
+    # consumes server-side when single_blocks are loaded. For the smoke
+    # test we just synthesise something of the right shape.
+    vec_orig = torch.randn(1, H, device=device, dtype=dtype) * 0.3
+
     # pe is produced by model.pe_embedder(ids) where ids has shape
     # [B, T_total, len(axes_dim)]. Generate synthetic ids and run them
     # through the actual embedder so the pe shape is exactly right
@@ -97,10 +102,11 @@ def main():
     print(f"[smoke] pe shape={tuple(pe.shape)} dtype={pe.dtype}")
 
     # Warm-up
-    print(f"[smoke] warmup forward (running all {n_double} loaded blocks)")
+    n_total_loaded = n_double + n_single
+    print(f"[smoke] warmup forward (running all {n_double}D + {n_single}S = {n_total_loaded} loaded blocks)")
     with torch.no_grad():
-        img_w, txt_w = forward_back_half_double_blocks(
-            model, img=img, txt=txt, vec=vec, pe=pe,
+        img_w, txt_w = forward_back_half(
+            model, img=img, txt=txt, vec=vec, vec_orig=vec_orig, pe=pe,
             attn_mask=None,
         )
     torch.cuda.synchronize()
@@ -113,8 +119,8 @@ def main():
         for _ in range(n_iters):
             torch.cuda.synchronize()
             t0 = time.time()
-            img_o, txt_o = forward_back_half_double_blocks(
-                model, img=img, txt=txt, vec=vec, pe=pe,
+            img_o, txt_o = forward_back_half(
+                model, img=img, txt=txt, vec=vec, vec_orig=vec_orig, pe=pe,
                 attn_mask=None,
             )
             torch.cuda.synchronize()
@@ -122,7 +128,7 @@ def main():
 
     avg_ms = sum(timings) / n_iters * 1000
     print(f"[smoke] back-half forward: {avg_ms:.1f} ms avg over {n_iters} runs")
-    print(f"[smoke] {n_double} blocks at {avg_ms/n_double:.1f} ms/block")
+    print(f"[smoke] {n_total_loaded} blocks at {avg_ms/max(1, n_total_loaded):.1f} ms/block")
     print(f"[smoke] img out shape={tuple(img_o.shape)} dtype={img_o.dtype}")
     print(f"[smoke] txt out shape={tuple(txt_o.shape)} dtype={txt_o.dtype}")
     print("[smoke] OK")

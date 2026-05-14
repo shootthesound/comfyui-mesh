@@ -100,10 +100,13 @@ def load_flux2_klein(
 ):
     """Slim-load the back-half of a FLUX.2 checkpoint.
 
-    Only the LAST `n_blocks` double_blocks are read from disk. Front-half
-    double_blocks, all single_blocks, and the final_layer are never
-    touched — for models that don't fit on either device whole, this is
-    the load-bearing property.
+    `n_blocks` counts BOTH double_blocks AND single_blocks. The mapping:
+        - n_blocks <= n_double:        last n_blocks double_blocks
+                                       (no single_blocks loaded)
+        - n_blocks > n_double:         all double_blocks loaded, plus
+                                       FIRST (n_blocks - n_double) single_blocks
+                                       (so client picks up at single_block index
+                                        n_blocks - n_double)
 
     Reads via `safetensors.safe_open()` so disk I/O is exactly the bytes
     we keep — no full-model spike in CPU RAM or VRAM at any point.
@@ -114,8 +117,7 @@ def load_flux2_klein(
     how it distinguishes FLUX2 from FLUX1). They sit unused on the
     server side but cost almost nothing.
 
-    If `n_blocks is None` or `n_blocks >= total_double_blocks`, loads
-    every double_block (still skips single_blocks + final_layer).
+    If `n_blocks is None`, loads every block (full back-half).
     """
     import json
     from safetensors import safe_open
@@ -131,77 +133,103 @@ def load_flux2_klein(
         # the fp8 ops never bind.
         metadata = f.metadata() or {}
 
-        # 1. Detect total double_blocks count from key names (header-only,
-        #    no tensor data reads).
+        # 1. Detect total double_blocks AND single_blocks counts from key
+        #    names (header-only, no tensor data reads).
         db_indices = set()
+        sb_indices = set()
         for k in all_keys:
             if k.startswith("double_blocks."):
                 db_indices.add(int(k.split(".")[1]))
+            elif k.startswith("single_blocks."):
+                sb_indices.add(int(k.split(".")[1]))
         total_db = (max(db_indices) + 1) if db_indices else 0
+        total_sb = (max(sb_indices) + 1) if sb_indices else 0
         if total_db == 0:
             raise RuntimeError(
                 f"no double_blocks.* tensors found in {weights_path} — "
                 f"is this really a FLUX safetensors file?"
             )
 
-        if n_blocks is None or n_blocks >= total_db:
-            actual_n = total_db
-            drop = 0
+        total_blocks = total_db + total_sb
+        if n_blocks is None or n_blocks >= total_blocks:
+            n_double_remote = total_db
+            n_single_remote = total_sb
+        elif n_blocks <= total_db:
+            n_double_remote = n_blocks
+            n_single_remote = 0
         else:
-            actual_n = n_blocks
-            drop = total_db - n_blocks
+            n_double_remote = total_db
+            n_single_remote = n_blocks - total_db
 
-        print(f"[server] checkpoint has {total_db} double_blocks; "
-              f"loading {actual_n} (skipping first {drop})")
+        drop_db = total_db - n_double_remote   # how many front-half doubles to skip
+        # singles: we load the FIRST n_single_remote of them, no remap needed
+        # since they stay at indices [0..n_single_remote).
+
+        print(f"[server] checkpoint has {total_db} double_blocks + {total_sb} single_blocks "
+              f"({total_blocks} total)")
+        print(f"[server] loading {n_double_remote} doubles (skipping first {drop_db}) "
+              f"+ {n_single_remote} singles (first {n_single_remote})")
 
         # 2. Build the slim state dict by reading ONLY the needed tensors.
         #    Each .get_tensor() call reads exactly that tensor's bytes
         #    from disk — no full-file load.
         sd_slim = {}
         for k in all_keys:
-            # Server-unused, large: skip entirely (no disk read)
-            if k.startswith("single_blocks.") or k.startswith("final_layer."):
-                continue
+            if k.startswith("final_layer."):
+                continue  # client always runs final_layer
             if k.startswith("double_blocks."):
                 idx = int(k.split(".")[1])
-                if idx < drop:
-                    continue  # front-half block, server doesn't need it
-                # Remap: source double_blocks.{drop+i} -> slim double_blocks.{i}
+                if idx < drop_db:
+                    continue  # front-half block, client runs it
+                # Remap: source double_blocks.{drop_db+i} -> slim double_blocks.{i}
                 parts = k.split(".")
-                parts[1] = str(idx - drop)
+                parts[1] = str(idx - drop_db)
                 new_key = ".".join(parts)
                 sd_slim[new_key] = f.get_tensor(k)
+                continue
+            if k.startswith("single_blocks."):
+                idx = int(k.split(".")[1])
+                if idx >= n_single_remote:
+                    continue  # this single runs on the client (we only take the first M)
+                # No remap — singles stay at their original [0..n_single_remote) indices
+                sd_slim[k] = f.get_tensor(k)
                 continue
             # Encoders / modulation / pe_embedder / txt_norm — small and
             # load-bearing for ComfyUI's architecture detection.
             sd_slim[k] = f.get_tensor(k)
 
         slim_bytes = sum(t.numel() * t.element_size() for t in sd_slim.values())
+        n_loaded = n_double_remote + n_single_remote
+        full_estimate_gb = (total_blocks / max(1, n_loaded) * slim_bytes / 1024/1024/1024) if n_loaded else 0
         print(f"[server] slim state dict: {len(sd_slim)} tensors, "
-              f"{slim_bytes/1024/1024/1024:.2f} GB (full would be ~{total_db / actual_n * slim_bytes / 1024/1024/1024:.1f} GB)")
+              f"{slim_bytes/1024/1024/1024:.2f} GB (full would be ~{full_estimate_gb:.1f} GB)")
 
-        # 2b. Remap fp8 quantization metadata. _quantization_metadata is a
-        #     JSON-encoded dict of {layer_name: {"format": "float8_e4m3fn", ...}}
-        #     keyed by ORIGINAL layer names (e.g. "double_blocks.4.img_attn.proj").
-        #     Our slim SD has those weights remapped to indices [0..n_blocks),
-        #     so the metadata must remap to match — otherwise comfy.utils.
-        #     convert_old_quants writes `comfy_quant` markers at the original
-        #     indices, the wrapped fp8 Linear at the remapped indices never
-        #     gets its quant config, and forward() finds .weight == None.
+        # 2b. Remap fp8 quantization metadata to match the slim SD's key
+        #     remapping. Otherwise comfy.utils.convert_old_quants writes
+        #     `comfy_quant` markers at the original indices, the wrapped
+        #     fp8 Linear at the remapped indices never gets its quant
+        #     config, and forward() finds .weight == None.
         if "_quantization_metadata" in metadata:
             qm = json.loads(metadata["_quantization_metadata"])
             layers = qm.get("layers", {})
             new_layers = {}
             for layer_name, cfg in layers.items():
-                if layer_name.startswith("single_blocks.") or layer_name.startswith("final_layer."):
+                if layer_name.startswith("final_layer."):
                     continue  # not on the server
                 if layer_name.startswith("double_blocks."):
                     parts = layer_name.split(".")
                     idx = int(parts[1])
-                    if idx < drop:
+                    if idx < drop_db:
                         continue  # front-half block, skipped
-                    parts[1] = str(idx - drop)
+                    parts[1] = str(idx - drop_db)
                     new_layers[".".join(parts)] = cfg
+                    continue
+                if layer_name.startswith("single_blocks."):
+                    parts = layer_name.split(".")
+                    idx = int(parts[1])
+                    if idx >= n_single_remote:
+                        continue  # this single runs on client
+                    new_layers[layer_name] = cfg  # no remap
                     continue
                 # Encoder / modulation / etc — keep as-is
                 new_layers[layer_name] = cfg
@@ -213,9 +241,11 @@ def load_flux2_klein(
             print(f"[server] remapped {len(layers)} fp8 layer entries -> {len(new_layers)} for slim model")
 
     # 3. Hand the slim SD to ComfyUI's loader. Its detector counts
-    #    `double_blocks.*` keys (-> depth=actual_n) and `single_blocks.*`
-    #    keys (-> depth_single_blocks=0), so it builds a slim Flux model.
-    #    fp8 ops binding happens automatically via comfy's normal path.
+    #    `double_blocks.*` keys (-> depth=n_double_remote) and
+    #    `single_blocks.*` keys (-> depth_single_blocks=n_single_remote),
+    #    so it builds a slim Flux model with exactly the blocks we have
+    #    weights for. fp8 ops binding happens automatically via comfy's
+    #    normal path.
     print(f"[server] handing slim state dict to comfy.sd.load_diffusion_model_state_dict")
     model_options = {"dtype": dtype}
     patcher = comfy.sd.load_diffusion_model_state_dict(sd_slim, model_options=model_options, metadata=metadata)
@@ -239,39 +269,69 @@ def load_flux2_klein(
 
 
 # ---------------------------------------------------------------------
-# Forward pass — back-half double_blocks
+# Forward pass — back-half (double_blocks + optional single_blocks)
 # ---------------------------------------------------------------------
 
 @torch.no_grad()
-def forward_back_half_double_blocks(
+def forward_back_half(
     model,
     *,
     img: torch.Tensor,
     txt: torch.Tensor,
-    vec,
+    vec,                     # double-block modulation tuple
+    vec_orig: torch.Tensor | None,  # un-modulated tensor; needed iff singles loaded
     pe: torch.Tensor,
     attn_mask,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run ALL of the server's loaded double_blocks.
+    """Run ALL of the server's loaded blocks (doubles + any singles).
 
-    With the slim loader the server only has the LAST n_blocks of the
-    original model, remapped to indices [0..n_blocks). The request's
-    `start_block` field (if present) is informational only — server
-    always runs from its own block 0 to block N-1.
+    Doubles use the `vec` modulation tuple shipped from the client. If
+    we also have single_blocks loaded, we compute their modulation
+    locally via `model.single_stream_modulation(vec_orig)` — that
+    module is in the slim-load alongside the others. So the wire
+    payload only needs to carry vec_orig (one tiny tensor) instead
+    of a separately-precomputed single-block modulation tuple.
+
+    For the single_blocks portion, FLUX's architecture concatenates
+    txt+img into one stream before the singles loop and slices them
+    back at the end. We do that internally so the wire format stays
+    `(img, txt)` regardless of how many singles ran on the server.
 
     Match-up is the user's responsibility: client `n_blocks_remote`
     must equal server `--n-blocks`. Mismatch produces wrong output,
     not a crash.
     """
+    # Doubles first — operate on separate (img, txt) streams
     for block in model.double_blocks:
         img, txt = block(
-            img=img,
-            txt=txt,
-            vec=vec,
-            pe=pe,
-            attn_mask=attn_mask,
-            transformer_options={},
+            img=img, txt=txt, vec=vec, pe=pe,
+            attn_mask=attn_mask, transformer_options={},
         )
+
+    # Singles, if any — operate on the concatenated stream with their
+    # own (different) modulation
+    if len(model.single_blocks) > 0:
+        if vec_orig is None:
+            raise RuntimeError(
+                "server has single_blocks loaded but client did not send vec_orig — "
+                "client/server are on different versions, or n_blocks_remote on the "
+                "client is < n_double (no singles expected) but server has singles loaded"
+            )
+        # Compute single-block modulation locally. global_modulation=True
+        # path: returns (ModulationOut, None); we want the first element.
+        vec_single, _ = model.single_stream_modulation(vec_orig)
+
+        original_txt_len = txt.shape[1]
+        combined = torch.cat((txt, img), 1)
+        for block in model.single_blocks:
+            combined = block(
+                combined, vec=vec_single, pe=pe,
+                attn_mask=attn_mask, transformer_options={},
+            )
+        # Slice back to (img, txt) so the wire response shape is stable
+        txt = combined[:, :original_txt_len, ...]
+        img = combined[:, original_txt_len:, ...]
+
     if img.dtype == torch.float16:
         img = torch.nan_to_num(img, nan=0.0, posinf=65504, neginf=-65504)
     return img, txt
@@ -290,19 +350,30 @@ def _decode_request_tensors(header: dict, blobs: list[bytes], device: torch.devi
     img = codec.decode(*by_name["img"], device=device)
     txt = codec.decode(*by_name["txt"], device=device)
 
-    # Reconstruct vec via the named-tensor scheme from vec_io.
+    # Reconstruct vec (modulation tuple) via vec_io's named-tensor scheme.
+    # Note: vec_orig is shipped as a separate top-level tensor (not part of
+    # the modulation tuple), so we exclude it from the vec_io reconstruction.
     vec_kind = header.get("vec_kind", "tensor")
     vec_named: dict[str, torch.Tensor] = {}
     for name, (wire, blob) in by_name.items():
+        if name == "vec_orig":
+            continue  # handled separately below
         if name == "vec" or name.startswith("vec_"):
             vec_named[name] = codec.decode(wire, blob, device=device)
     vec = vec_io.reconstruct_vec(vec_kind, vec_named)
+
+    # vec_orig is optional — only present if the client knows the server
+    # might run single_blocks (newer client). If absent, server can still
+    # run a doubles-only forward.
+    vec_orig = None
+    if "vec_orig" in by_name:
+        vec_orig = codec.decode(*by_name["vec_orig"], device=device)
 
     pe = codec.decode(*by_name["pe"], device=device)
     attn_mask = None
     if header.get("has_attn_mask"):
         attn_mask = codec.decode(*by_name["attn_mask"], device=device)
-    return img, txt, vec, pe, attn_mask
+    return img, txt, vec, vec_orig, pe, attn_mask
 
 
 def _encode_response_tensors(img: torch.Tensor, txt: torch.Tensor, codec_mode: str, codec_qp: int, codec_lossless: bool):
@@ -319,6 +390,8 @@ def serve(model, host: str, port: int, device: torch.device):
     print(f"[server] listening on {host}:{port}")
 
     n_double_blocks = len(model.double_blocks)
+    n_single_blocks = len(model.single_blocks)
+    n_total_loaded = n_double_blocks + n_single_blocks
 
     while True:
         conn, addr = s.accept()
@@ -336,6 +409,8 @@ def serve(model, host: str, port: int, device: torch.device):
                         "server_info": {
                             "device": str(device),
                             "n_double_blocks": n_double_blocks,
+                            "n_single_blocks": n_single_blocks,
+                            "n_total_loaded": n_total_loaded,
                         },
                     }, [])
 
@@ -344,13 +419,13 @@ def serve(model, host: str, port: int, device: torch.device):
                     # slim server always runs its full loaded block list.
                     client_start_block = int(header.get("start_block", 0))
                     t0 = time.time()
-                    img, txt, vec, pe, attn_mask = _decode_request_tensors(header, blobs, device)
+                    img, txt, vec, vec_orig, pe, attn_mask = _decode_request_tensors(header, blobs, device)
                     t_decode = time.time() - t0
 
                     t0 = time.time()
-                    img_out, txt_out = forward_back_half_double_blocks(
+                    img_out, txt_out = forward_back_half(
                         model,
-                        img=img, txt=txt, vec=vec, pe=pe,
+                        img=img, txt=txt, vec=vec, vec_orig=vec_orig, pe=pe,
                         attn_mask=attn_mask,
                     )
                     t_forward = time.time() - t0
@@ -381,7 +456,8 @@ def serve(model, host: str, port: int, device: torch.device):
                         },
                     }
                     protocol.send_message(conn, resp_header, [w.bytes_payload for w in wire_outs])
-                    print(f"[server] forward {n_double_blocks} blocks (client said start={client_start_block}): "
+                    print(f"[server] forward {n_double_blocks}D + {n_single_blocks}S blocks "
+                          f"(client said start={client_start_block}): "
                           f"decode {t_decode*1000:.1f} ms  fwd {t_forward*1000:.1f} ms  enc {t_encode*1000:.1f} ms  "
                           f"in {sum(len(b) for b in blobs)/1024/1024:.2f} MB  "
                           f"out {sum(len(w.bytes_payload) for w in wire_outs)/1024/1024:.2f} MB")
@@ -406,11 +482,13 @@ def main():
     p.add_argument("--dtype", type=str, default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
     p.add_argument("--n-blocks", type=int, default=None,
-                   help="How many of the LAST double_blocks to load. MUST match "
-                        "the client node's `n_blocks_remote` setting — user is "
-                        "responsible for keeping the two in sync. If omitted, "
-                        "loads every double_block (still skips single_blocks and "
-                        "final_layer; useful when the client's split_index=0).")
+                   help="How many transformer blocks the server runs. Counts "
+                        "doubles first, then singles. e.g. for FLUX.2 Klein 9B "
+                        "(8 doubles + 24 singles): N=4 -> last 4 doubles only. "
+                        "N=8 -> all doubles. N=9 -> all doubles + first 1 single. "
+                        "N=32 -> all doubles + all singles (entire back-half). "
+                        "MUST match the client node's `n_blocks_remote` setting. "
+                        "If omitted, loads every block (full back-half).")
     args = p.parse_args()
 
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]

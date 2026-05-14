@@ -1,14 +1,22 @@
 """ComfyUI custom node: FLUX mesh-split rig.
 
-Splits FLUX double_blocks across two machines:
-    - First (total - n_blocks_remote) blocks run locally (this 5090)
-    - Last  n_blocks_remote          blocks run remotely (the 4090 over TCP)
+Splits FLUX transformer blocks across two machines:
+    - First (n_double - min(n, n_double)) doubles run locally
+    - Last  min(n, n_double) doubles run remotely
+    - First (n - n_double) single_blocks run remotely (when n > n_double)
+    - Remaining single_blocks + final_layer + VAE run locally
+
+So `n_blocks_remote` is a unified counter starting from the END of the
+double_blocks stack and walking forward through the single_blocks.
 
 User is responsible for setting `n_blocks_remote` here to match the
 server's `--n-blocks` setting. Mismatch produces wrong output, not a
 crash — no handshake validation in v1.
 
-All single_blocks + final layer stay local (smaller, post-double-block).
+The single_blocks portion needs the un-modulated `vec_orig` tensor so
+the server can compute single-block modulation locally. We capture
+that via a forward_pre_hook on `double_stream_modulation_img` and ship
+it as one extra small tensor on every wire request.
 
 Wiring uses ComfyUI's built-in transformer_options["patches_replace"]
 mechanism — we register a per-block override callback that, instead of
@@ -48,6 +56,8 @@ _LAST_STATS: dict = {
     "last_call_seconds": 0.0,
     "codec_mode": "n/a",
     "n_blocks_remote": 0,
+    "n_double_remote": 0,
+    "n_single_remote": 0,
     "split_index": -1,
     "blocks_offloaded": 0,
 }
@@ -92,6 +102,7 @@ class MeshClient:
         img: torch.Tensor,
         txt: torch.Tensor,
         vec: torch.Tensor | tuple,
+        vec_orig: torch.Tensor | None,
         pe: torch.Tensor,
         attn_mask,
         start_block: int,
@@ -127,6 +138,15 @@ class MeshClient:
             w = codec.encode_raw(tname, t)
             wire_tensors.append(w.to_header())
             blobs.append(w.bytes_payload)
+
+        # vec_orig — the un-modulated tensor that single_stream_modulation
+        # consumes. Server uses it to compute the single-block modulation
+        # locally (only when it has single_blocks loaded; ignored otherwise).
+        # ~16 KB, raw.
+        if vec_orig is not None:
+            vo_w = codec.encode_raw("vec_orig", vec_orig)
+            wire_tensors.append(vo_w.to_header())
+            blobs.append(vo_w.bytes_payload)
 
         pe_w = codec.encode_raw("pe", pe)
         wire_tensors.append(pe_w.to_header())
@@ -196,10 +216,12 @@ def _make_block_replacement(
     codec_mode: str,
     codec_qp: int,
     codec_lossless: bool,
+    vec_orig_capture: dict,
 ):
     """Return a callable that ComfyUI's patches_replace will invoke at
     block `split_index`. It does the remote forward for blocks
-    [split_index..n_double_blocks) and returns the post-back-half state."""
+    [split_index..n_double_blocks) (and any configured single_blocks)
+    and returns the post-back-half state."""
 
     def replace_at_split(args, extras):
         img = args["img"]
@@ -208,10 +230,17 @@ def _make_block_replacement(
         pe = args["pe"]
         attn_mask = args.get("attn_mask")
 
+        # vec_orig was captured by the forward_pre_hook on
+        # double_stream_modulation_img earlier in this forward pass.
+        # When the server has single_blocks loaded, it uses vec_orig
+        # to compute the single-block modulation locally.
+        vec_orig = vec_orig_capture.get("vec_orig")
+
         new_img, new_txt = client.call_double_blocks(
             img=img,
             txt=txt,
             vec=vec,
+            vec_orig=vec_orig,
             pe=pe,
             attn_mask=attn_mask,
             start_block=split_index,
@@ -224,12 +253,54 @@ def _make_block_replacement(
     return replace_at_split
 
 
-def _make_passthrough():
-    """Replacement for the blocks AFTER the split point — they should
-    not run locally because the remote already did them."""
+def _make_double_passthrough():
+    """No-op replacement for double_blocks AFTER the split point — server
+    already ran them, return inputs unchanged."""
     def passthrough(args, extras):
         return {"img": args["img"], "txt": args["txt"]}
     return passthrough
+
+
+def _make_single_passthrough():
+    """No-op replacement for single_blocks the server has already run.
+    Single_blocks operate on the concatenated [txt|img] tensor, so the
+    args dict carries just `img` (the concatenated form)."""
+    def passthrough(args, extras):
+        return {"img": args["img"]}
+    return passthrough
+
+
+def _install_vec_orig_hook(diffusion_model, capture_dict):
+    """Install a forward_pre_hook on `double_stream_modulation_img` to
+    capture vec_orig (the un-modulated tensor passed into the modulation
+    modules at the start of each forward pass).
+
+    Idempotent: if a previous hook from this node is already installed,
+    it's removed first so re-running the workflow doesn't accumulate
+    hooks. Marker is stashed as `_mesh_vec_orig_hook` on the module.
+
+    Without this, the server can't run any single_blocks (its
+    single_stream_modulation needs vec_orig to compute the single-block
+    modulation tuple).
+    """
+    mod = getattr(diffusion_model, "double_stream_modulation_img", None)
+    if mod is None:
+        return  # FLUX1 path (no global_modulation) doesn't have these
+
+    # Remove any prior hook from this node so we don't accumulate
+    prior_handle = getattr(mod, "_mesh_vec_orig_hook", None)
+    if prior_handle is not None:
+        try:
+            prior_handle.remove()
+        except Exception:
+            pass
+
+    def hook(module, inputs):
+        # inputs is a tuple of positional args; vec_orig is inputs[0]
+        if len(inputs) > 0:
+            capture_dict["vec_orig"] = inputs[0]
+
+    mod._mesh_vec_orig_hook = mod.register_forward_pre_hook(hook)
 
 
 class MeshSplitFlux:
@@ -242,8 +313,15 @@ class MeshSplitFlux:
         return {
             "required": {
                 "model": ("MODEL",),
-                "n_blocks_remote": ("INT", {"default": 4, "min": 0, "max": 100,
-                                            "tooltip": "How many of the LAST double_blocks to run on the remote server. MUST match the server's --n-blocks setting. 0 = nothing remote (no-op); 4 on an 8-block model = even half-split; 8 = entire double_block stack remote."}),
+                "n_blocks_remote": ("INT", {"default": 4, "min": 0, "max": 256,
+                                            "tooltip": (
+                                                "How many transformer blocks run on the remote server. "
+                                                "Counts double_blocks first, then single_blocks. "
+                                                "For FLUX.2 Klein 9B (8 doubles + 24 singles): "
+                                                "0=nothing remote, 1-8=last N doubles, "
+                                                "9-32=all doubles + first (N-8) singles. "
+                                                "MUST match the server's --n-blocks setting."
+                                            )}),
                 "remote_host": ("STRING", {"default": "127.0.0.1",
                                            "tooltip": "Hostname or IP of the back-half server (the 4090)."}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535}),
@@ -261,24 +339,42 @@ class MeshSplitFlux:
     OUTPUT_NODE = False
 
     def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless):
-        # Reach into the diffusion model to learn n_double_blocks
+        # Reach into the diffusion model to learn block counts
         diffusion = model.model.diffusion_model
         n_double_blocks = len(diffusion.double_blocks)
-        if not (0 <= n_blocks_remote <= n_double_blocks):
+        n_single_blocks = len(diffusion.single_blocks)
+        n_total_blocks = n_double_blocks + n_single_blocks
+        if not (0 <= n_blocks_remote <= n_total_blocks):
             raise ValueError(
-                f"n_blocks_remote {n_blocks_remote} out of range; model has {n_double_blocks} double_blocks"
+                f"n_blocks_remote {n_blocks_remote} out of range; model has "
+                f"{n_double_blocks} doubles + {n_single_blocks} singles "
+                f"= {n_total_blocks} total"
             )
 
-        # Convert "N blocks running remotely" to "intercept at block index
-        # (total - N)" — that's where our patches_replace fires on the
-        # client side. The server is configured with --n-blocks N so its
-        # block 0 is what was originally block split_index.
-        split_index = n_double_blocks - n_blocks_remote
+        # Translate the unified n_blocks_remote into per-stack offload counts.
+        # Doubles get offloaded first; once n_blocks_remote exceeds n_double,
+        # the surplus eats into singles (front-to-back).
+        if n_blocks_remote <= n_double_blocks:
+            n_double_remote = n_blocks_remote
+            n_single_remote = 0
+        else:
+            n_double_remote = n_double_blocks
+            n_single_remote = n_blocks_remote - n_double_blocks
+
+        # Where the wire hook fires in the doubles loop. If no doubles are
+        # offloaded (n_double_remote == 0), we don't fire there at all and
+        # the wire hook moves down to single_block[0].
+        split_index = n_double_blocks - n_double_remote
 
         # Open / reuse the client so the user gets a connection error
         # at queue-time rather than mid-sample.
         client = _get_client(remote_host, remote_port)
         client._ensure_open()
+
+        # Capture vec_orig via a forward_pre_hook on the modulation module —
+        # the server uses it to compute single-block modulation locally.
+        vec_orig_capture: dict = {"vec_orig": None}
+        _install_vec_orig_hook(diffusion, vec_orig_capture)
 
         # ModelPatcher copy + register the per-block overrides via the
         # canonical comfy.model_patcher API. Using set_model_patch_replace
@@ -287,16 +383,36 @@ class MeshSplitFlux:
         m = model.clone()
         if n_blocks_remote > 0:
             replace_at_split = _make_block_replacement(
-                client, split_index, n_double_blocks, codec_mode, codec_qp, codec_lossless
+                client, split_index, n_double_blocks,
+                codec_mode, codec_qp, codec_lossless,
+                vec_orig_capture,
             )
-            passthrough = _make_passthrough()
-            m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
-            for i in range(split_index + 1, n_double_blocks):
-                m.set_model_patch_replace(passthrough, "dit", "double_block", i)
+            double_pass = _make_double_passthrough()
+            single_pass = _make_single_passthrough()
+
+            if n_double_remote > 0:
+                # Wire hook fires inside the double_blocks loop
+                m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
+                for i in range(split_index + 1, n_double_blocks):
+                    m.set_model_patch_replace(double_pass, "dit", "double_block", i)
+            else:
+                # No doubles offloaded — wire hook moves to single_block[0]
+                # (this branch is only reachable if 0 < n_blocks_remote <= n_single_blocks
+                # AND n_double_remote == 0, which by our mapping means ... never.
+                # We leave this branch unreachable for the current mapping but
+                # the structure supports a future "singles-only" mode.)
+                pass
+
+            # If the server is also running some single_blocks, passthrough
+            # those on the client so its local copies don't run again.
+            for i in range(n_single_remote):
+                m.set_model_patch_replace(single_pass, "dit", "single_block", i)
         # n_blocks_remote == 0: no patches; entire model runs locally
 
         _LAST_STATS["codec_mode"] = codec_mode
         _LAST_STATS["n_blocks_remote"] = n_blocks_remote
+        _LAST_STATS["n_double_remote"] = n_double_remote
+        _LAST_STATS["n_single_remote"] = n_single_remote
         _LAST_STATS["split_index"] = split_index
         _LAST_STATS["blocks_offloaded"] = n_blocks_remote
         _LAST_STATS["wire_call_count"] = 0
@@ -304,8 +420,10 @@ class MeshSplitFlux:
         _LAST_STATS["bytes_received"] = 0
         _LAST_STATS["last_call_seconds"] = 0.0
 
-        print(f"[mesh] {n_blocks_remote}/{n_double_blocks} double_blocks running remotely "
-              f"(intercepting at block {split_index}); server={remote_host}:{remote_port}; "
+        print(f"[mesh] offloading {n_double_remote}/{n_double_blocks} doubles + "
+              f"{n_single_remote}/{n_single_blocks} singles "
+              f"(double_block intercept at index {split_index}); "
+              f"server={remote_host}:{remote_port}; "
               f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless}")
 
         return (m,)
@@ -326,9 +444,12 @@ class MeshStatus:
     def report(self):
         s = _LAST_STATS
         ratio = (s["bytes_sent"] / max(1, s["bytes_received"]))
+        n_double = s.get("n_double_remote", s.get("blocks_offloaded", 0))
+        n_single = s.get("n_single_remote", 0)
         msg = (
             f"n_blocks_remote={s.get('n_blocks_remote', s['blocks_offloaded'])}  "
-            f"(intercepting at block {s['split_index']})\n"
+            f"({n_double} doubles + {n_single} singles, "
+            f"double_block intercept at index {s['split_index']})\n"
             f"codec_mode={s['codec_mode']}\n"
             f"wire_calls={s['wire_call_count']}  "
             f"bytes_sent={s['bytes_sent']/1024/1024:.2f} MB  "

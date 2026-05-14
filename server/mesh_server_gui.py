@@ -61,23 +61,33 @@ def detect_gpus() -> list[str]:
     return devices or ["cuda:0"]
 
 
-def detect_n_blocks_max(weights_path: Path) -> int | None:
+def detect_n_blocks_max(weights_path: Path) -> tuple[int, int] | None:
     """Open the safetensors header (no tensor data) and count
-    double_blocks.N keys to find max N+1. Returns None on failure."""
+    double_blocks.N + single_blocks.N keys. Returns (n_double, n_single)
+    or None on failure. The GUI uses (n_double + n_single) as the
+    spinbox max — n_blocks_remote is a unified counter spanning both."""
     try:
         from safetensors import safe_open
     except ImportError:
         return None
     try:
         with safe_open(str(weights_path), framework="pt", device="cpu") as f:
-            indices = set()
+            db_idx = set()
+            sb_idx = set()
             for k in f.keys():
                 if k.startswith("double_blocks."):
                     try:
-                        indices.add(int(k.split(".")[1]))
+                        db_idx.add(int(k.split(".")[1]))
                     except (ValueError, IndexError):
                         continue
-            return (max(indices) + 1) if indices else None
+                elif k.startswith("single_blocks."):
+                    try:
+                        sb_idx.add(int(k.split(".")[1]))
+                    except (ValueError, IndexError):
+                        continue
+            if not db_idx:
+                return None
+            return (max(db_idx) + 1, (max(sb_idx) + 1) if sb_idx else 0)
     except Exception:
         return None
 
@@ -226,16 +236,20 @@ class MeshServerGUI:
         if not path or not Path(path).is_file():
             self.n_blocks_info.config(text="(pick a model file to see max)")
             return
-        n_max = detect_n_blocks_max(Path(path))
-        if n_max is None:
+        info = detect_n_blocks_max(Path(path))
+        if info is None:
             self.n_blocks_info.config(text="(could not read header)")
             return
+        n_double, n_single = info
+        n_max = n_double + n_single
         self.n_blocks_spin.config(to=n_max)
         cur = self.n_blocks_var.get()
         if cur > n_max:
             self.n_blocks_var.set(n_max)
         self.n_blocks_info.config(
-            text=f"(checkpoint has {n_max} blocks; 0 = full load, {n_max} = whole back-half remote)"
+            text=(f"(checkpoint has {n_double} doubles + {n_single} singles = {n_max} blocks; "
+                  f"1-{n_double}=last N doubles, "
+                  f"{n_double + 1}-{n_max}=all doubles + first (N-{n_double}) singles)")
         )
 
     def _on_start(self):
