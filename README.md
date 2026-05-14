@@ -61,13 +61,14 @@ per generation. Compared to ~280 MB uncompressed.
 **On the host running ComfyUI (e.g. the 5090):**
 
 1. This folder is already at `ComfyUI/custom_nodes/comfyui-mesh/`. Restart
-   ComfyUI to pick it up.
-2. The codec (`nvenc_pframe/`) is bundled in this folder — no separate
-   install needed. It does have one runtime dep:
+   ComfyUI — it'll auto-install our `requirements.txt` (just
+   `cuda-bindings` on top of ComfyUI's existing deps).
+   If you'd rather install manually:
    ```
-   pip install cuda-bindings
+   pip install -r requirements.txt
    ```
-   Then verify: `python -c "import nvenc_pframe"` (should succeed).
+2. Verify the bundled codec loads: `python -c "import nvenc_pframe"`
+   (should succeed once `cuda-bindings` is in your venv).
 
 **On the host running the back-half server (e.g. the 4090):**
 
@@ -75,9 +76,9 @@ per generation. Compared to ~280 MB uncompressed.
    the bundled `nvenc_pframe/` rides along).
 2. Get ComfyUI's `comfy/` package importable. Simplest: clone ComfyUI
    next to the server folder.
-3. Install the one external dep:
+3. Install the deps:
    ```
-   pip install torch safetensors einops cuda-bindings
+   pip install -r server/requirements.txt
    ```
 4. Drop your FLUX safetensors checkpoint into the server folder.
 5. Launch:
@@ -130,6 +131,7 @@ anywhere in your workflow and check the console output.
 ```
 comfyui-mesh/
 ├── README.md                     ← this file
+├── requirements.txt              ← ComfyUI auto-installs this on node load
 ├── __init__.py                   ← ComfyUI node registration
 ├── mesh_node.py                  ← MeshSplitFlux + MeshStatus
 ├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
@@ -147,6 +149,7 @@ comfyui-mesh/
 └── server/                       ← deploy folder for the back-half host
     ├── README.md                 ← server-side setup
     ├── CLAUDE.md                 ← brief for an AI agent doing back-half setup
+    ├── requirements.txt          ← full standalone deps (torch + ... + cuda-bindings)
     ├── mesh_server.py            ← slim-load TCP server
     ├── mesh_server_gui.py        ← Tkinter wrapper around the server
     ├── codec.py / protocol.py / vec_io.py    ← mirror of client (byte-identical)

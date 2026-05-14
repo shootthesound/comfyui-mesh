@@ -21,6 +21,7 @@ load-bearing property for models too big to fit on either device whole.
 server/
 ├── README.md                   ← this file
 ├── CLAUDE.md                   ← brief for an AI agent doing this side's setup
+├── requirements.txt            ← pip install -r this on the back-half host
 ├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
 ├── mesh_server_gui.py          ← Tkinter wrapper — pick file, set n_blocks, click Start.
 ├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
@@ -50,12 +51,13 @@ drift = silent corruption.
 In whichever venv you'll use:
 
 ```
-pip install torch safetensors einops cuda-bindings
+pip install -r requirements.txt
 ```
 
-`cuda-bindings` is the only extra dep the bundled `nvenc_pframe/`
-needs. (The codec source is in this folder; no separate `pip install
-nvenc-pframe` step.)
+That installs `torch`, `safetensors`, `einops`, and `cuda-bindings` —
+everything the standalone server needs. `cuda-bindings` is the one
+dep specifically for the bundled `nvenc_pframe/` codec wrapper (the
+codec source itself is in this folder, no separate install step).
 
 ### 2. Get ComfyUI's source on the box
 

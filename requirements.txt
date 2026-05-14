@@ -1,0 +1,6 @@
+# comfyui-mesh — runtime dependencies
+#
+# torch / safetensors / einops / numpy are already in any ComfyUI install,
+# so we only list the one extra dep the bundled nvenc_pframe needs.
+
+cuda-bindings

@@ -1,0 +1,17 @@
+# comfyui-mesh server — runtime dependencies
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# This is for the back-half host (the standalone Python process, NOT
+# the ComfyUI client). The ComfyUI client's deps are at the parent
+# folder's requirements.txt — it inherits torch / safetensors / einops
+# from ComfyUI's own install and only needs cuda-bindings on top.
+#
+# The server runs without ComfyUI's UI but does import its `comfy/`
+# Python package; clone ComfyUI separately and set COMFYUI_PATH.
+
+torch
+safetensors
+einops
+cuda-bindings

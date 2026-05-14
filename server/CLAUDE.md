@@ -22,6 +22,7 @@ The slim load is the load-bearing architectural property — it's what makes thi
 .
 ├── CLAUDE.md                ← you are here
 ├── README.md                ← human-facing version of this brief
+├── requirements.txt         ← `pip install -r` for the standalone server
 ├── mesh_server.py           ← the server (slim-loads via safetensors.safe_open)
 ├── mesh_server_gui.py       ← Tkinter wrapper around the server
 ├── codec.py                 ← tensor ↔ NVENC bitstream (per-channel quant + HEVC)
@@ -68,12 +69,15 @@ Launchers default to `..\ComfyUI` relative to this folder. Override with `COMFYU
 
 **Critical:** the ComfyUI version here should match (or be reasonably close to) the version on the client. The fp8 detection and FLUX implementation evolve; mismatched versions = silent-correctness bugs.
 
-### 3. Confirm nvenc-pframe loads
-
-The codec is **bundled in this folder** at `./nvenc_pframe/`. No separate install. It does require one PyPI dep:
+### 3. Install Python dependencies
 
 ```
-pip install cuda-bindings
+pip install -r requirements.txt
+```
+
+That gives you `torch`, `safetensors`, `einops`, and `cuda-bindings`. The codec wrapper itself is **bundled** at `./nvenc_pframe/` — no separate install. Confirm it loads:
+
+```
 python -c "import nvenc_pframe; print(nvenc_pframe.__file__)"
 ```
 
