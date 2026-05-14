@@ -6,6 +6,13 @@ REM For a two-machine setup where this machine only has one GPU, use this.
 
 setlocal
 
+REM ============================================================
+REM  EDIT THIS: how many of the LAST double_blocks to load.
+REM  Must match the node's `n_blocks_remote` setting.
+REM  Leave at 0 to load the full back-half model.
+REM ============================================================
+set N_BLOCKS=4
+
 REM Pin this process to the first GPU. After this line the server only
 REM sees one card and addresses it as cuda:0.
 set CUDA_VISIBLE_DEVICES=0
@@ -36,13 +43,13 @@ if exist "%VENV_PY%" (
     echo [run_server] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
-REM ---- 5. Slim-load via N_BLOCKS env var (optional; defaults to full load) ----
-if not "%N_BLOCKS%"=="" (
+REM ---- 5. Translate N_BLOCKS (from the EDIT-ME line at the top) into the CLI arg ----
+if "%N_BLOCKS%"=="0" (
+    set "N_BLOCKS_ARG="
+    echo [run_server] full load (N_BLOCKS=0)
+) else (
     set "N_BLOCKS_ARG=--n-blocks %N_BLOCKS%"
     echo [run_server] slim load: --n-blocks %N_BLOCKS%
-) else (
-    set "N_BLOCKS_ARG="
-    echo [run_server] full load (N_BLOCKS env var not set)
 )
 
 REM ---- 6. Launch ----

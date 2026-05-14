@@ -8,6 +8,13 @@ REM     run_server_gpu1.bat   (pins to physical GPU 1)
 
 setlocal
 
+REM ============================================================
+REM  EDIT THIS: how many of the LAST double_blocks to load.
+REM  Must match the node's `n_blocks_remote` setting.
+REM  Leave at 0 to load the full back-half model.
+REM ============================================================
+set N_BLOCKS=4
+
 REM ---- 1. Where to find ComfyUI's Python sources ----
 if "%COMFYUI_PATH%"=="" (
     REM Default: assume ComfyUI is checked out next to this folder.
@@ -34,17 +41,13 @@ if exist "%VENV_PY%" (
     echo [run_server] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
-REM ---- 5. Optional slim-load: how many of the LAST double_blocks to load
-REM       Set N_BLOCKS env var before running, e.g.:
-REM           set N_BLOCKS=4 && run_server.bat
-REM       Must match the client node's `n_blocks_remote` setting.
-REM       Unset = load all double_blocks (full back-half model in VRAM).
-if not "%N_BLOCKS%"=="" (
+REM ---- 5. Translate N_BLOCKS (from the EDIT-ME line at the top) into the CLI arg ----
+if "%N_BLOCKS%"=="0" (
+    set "N_BLOCKS_ARG="
+    echo [run_server] full load (N_BLOCKS=0)
+) else (
     set "N_BLOCKS_ARG=--n-blocks %N_BLOCKS%"
     echo [run_server] slim load: --n-blocks %N_BLOCKS%
-) else (
-    set "N_BLOCKS_ARG="
-    echo [run_server] full load (N_BLOCKS env var not set)
 )
 
 REM ---- 6. Launch ----
