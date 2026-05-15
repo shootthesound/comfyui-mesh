@@ -19,7 +19,7 @@ bytes on the wire while they're already on the GPU.
 
 ```
                 ┌─────────────────┐                     ┌─────────────────┐
-                │  ComfyUI 5090   │   NVENC HEVC wire   │  Server 4090    │
+                │  ComfyUI host   │   NVENC HEVC wire   │  Mesh server    │
                 │                 │ ─── ~10 MB / step ─►│                 │
    img latent ──┤ front-half      │                     │ back-half       │── img latent
                 │ blocks + VAE    │ ◄────────────────── │ slim-loaded     │
@@ -123,7 +123,7 @@ mesh server. Connected over your LAN or Tailscale.
    spinbox shows the range, default 4), pick port, click **Start
    Server**.
 
-The server prints `[server] listening on 0.0.0.0:7777` when ready.
+The server prints `[server] READY — listening on 0.0.0.0:7777 (n_blocks=4: 4D + 0S)` when ready.
 
 ### Wire it up in a workflow
 
@@ -187,11 +187,11 @@ LoraLoader) and the sampler. Its parameters:
 | Parameter | Default | What it controls |
 |---|---|---|
 | `model` | — | The loaded FLUX MODEL |
-| `n_blocks_remote` | 4 | How many transformer blocks run remotely (counts double-blocks first, then single-blocks). For Klein 9B: max 32. For FLUX.2 dev: max 56. **Must match the server's `--n-blocks`.** |
-| `remote_host` | `127.0.0.1` | Server's hostname / LAN IP / Tailscale IP |
-| `remote_port` | `7777` | Server's TCP port |
-| `codec_mode` | `nvenc` | `nvenc` for slow wires, `raw` for same-host PCIe |
-| `codec_qp` | `18` | NVENC quality. 10=near-lossless, 18=default, 28=highest compression |
+| `n_blocks_remote` | 4 | How many transformer blocks run remotely (counts double-blocks first, then single-blocks). For Klein 9B: max 32. For FLUX.2 dev: max 56. Change handling is inline — see "Live UX" below. |
+| `remote_host` | `127.0.0.1` | Hostname or IP of the back-half server. 127.0.0.1 = same machine. 192.168.x.x = LAN. 100.x.x.x = VPN. |
+| `remote_port` | `7777` | TCP port the back-half server is listening on |
+| `codec_mode` | `nvenc` | `nvenc` for slow wires (LAN, VPN, residential broadband). `raw` for same-host PCIe (faster than codec encode/decode latency). |
+| `codec_qp` | `18` | NVENC quality. 10=near-lossless, 18=sharp (default), towards 28 the image gets noticeably softer with visible noise |
 | `codec_lossless` | OFF | NVENC lossless tuning (still has uint8 quant floor) |
 | `codec_tile_dim` | `4` | Channels-per-frame tile size. Higher = fewer larger NVENC frames = ~5× faster. 4 is a strong default. |
 | `forward_client_loras` | ON | Ship client-side LoraLoader patches to server so the LoRA effect covers back-half blocks too |
@@ -200,7 +200,49 @@ LoraLoader) and the sampler. Its parameters:
 
 Pure-output node. Reports per-generation stats (bytes sent / received,
 last-call latency, codec ratio). Drop anywhere in the graph and watch
-the ComfyUI console.
+the ComfyUI console. (Most live state — connection, pending changes,
+errors — now surfaces directly on the `Mesh Split FLUX` node itself,
+see "Live UX" below.)
+
+---
+
+## Live UX on the node
+
+The `Mesh Split FLUX` node has a few inline UI behaviours so you don't
+have to hunt the console for status:
+
+- **Always-on connection indicator** at the bottom: green dot = client
+  connected to the mesh server, red = disconnected (server died or
+  network gone), grey = idle (no queue this session yet). Right side
+  shows `host:port · server n=N` so you can see at a glance what
+  you're talking to and what its `--n-blocks` is. Polls every 3s.
+
+- **Confirm-restart button** (orange, bold) appears when you change
+  `n_blocks_remote` — it's a pending state that won't actually take
+  effect until you click it. Clicking POSTs the new value to the
+  server, which restarts itself with the new `--n-blocks`. The button
+  disappears when the round-trip completes. Until then, queueing the
+  workflow is blocked with a clear "click Confirm first" message —
+  prevents the silent-wrong-output footgun of mismatched n on the
+  two sides.
+
+- **Inline banner** under the node body for important warnings — most
+  notably "decreasing n_blocks_remote requires a ComfyUI restart"
+  (the client's stripped weights for the back-half blocks are gone
+  for the session and can only be reloaded from disk by a fresh
+  ComfyUI launch).
+
+- **Last-used values remembered** across fresh node drops. Drop a
+  `Mesh Split FLUX` into a brand-new workflow and your last
+  `remote_host` / `n_blocks_remote` / `codec_qp` etc. come back
+  pre-filled. Loading a saved workflow always wins over the
+  remembered defaults.
+
+- **Transparent reconnect** if the server dies and comes back. The
+  cached client socket gets reset, the next queue reopens it — no
+  ComfyUI relaunch needed. Works whether the server crashed,
+  restarted itself for a reconfigure, or you killed and re-launched
+  it manually.
 
 ---
 
@@ -240,19 +282,16 @@ What's known and stable today:
   VRAM (the whole point — the server already has those blocks, the
   client doesn't need to hold them too). **Increasing** `n_blocks_remote`
   works seamlessly — the strip extends incrementally to cover more
-  blocks, no reload needed. **Decreasing** would require un-stripping,
-  but those weights are gone for the session. The node surfaces an
-  inline banner (red, under the node) telling you to restart ComfyUI;
-  the next launch re-reads the model from disk and applies the new
-  (smaller) `n_blocks_remote`. Same applies if you remove the Mesh
-  Split FLUX node entirely after a generation.
+  blocks, the Confirm button restarts the server, no client reload
+  needed. **Decreasing** would require un-stripping the weights, but
+  those weights are gone for the session. The inline banner under the
+  node tells you to restart ComfyUI; the next launch re-reads the
+  model from disk and applies the new (smaller) `n_blocks_remote`.
 - **Sequential request/response.** No CUDA-stream overlap of codec
   work with compute. The FLUX sampler is inherently sequential per
   timestep, so this caps the headroom anyway.
-- **One client at a time.** Server is single-tenant.
-- **User-responsible parameter matching.** Client's `n_blocks_remote`
-  and server's `--n-blocks` must agree. Mismatch = wrong output, no
-  error. Deliberate keep-it-simple choice.
+- **One client at a time.** Server is single-tenant. Connecting a
+  second client kicks the first.
 
 ---
 
@@ -286,12 +325,13 @@ What more support unlocks:
 comfyui-mesh/
 ├── README.md                     ← this file
 ├── requirements.txt              ← ComfyUI auto-installs (cuda-bindings)
-├── __init__.py                   ← ComfyUI node registration
-├── mesh_node.py                  ← MeshSplitFlux + MeshStatus
+├── __init__.py                   ← ComfyUI node registration + WEB_DIRECTORY
+├── mesh_node.py                  ← MeshSplitFlux + MeshStatus + HTTP routes
 ├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
 ├── protocol.py                   ← length-prefixed TCP framing
 ├── vec_io.py                     ← FLUX.2 vec/modulation tuple (de)serializer
 ├── lora_io.py                    ← safetensors-based LoRA patch shipping
+├── web/mesh.js                   ← pill widgets, banner, Confirm button, connection light
 ├── smoke_test_codec.py           ← standalone codec roundtrip test
 ├── nvenc_pframe/                 ← BUNDLED NVENC codec wrapper (no separate install)
 └── server/                       ← deploy folder for the back-half host

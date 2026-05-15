@@ -430,6 +430,21 @@ class MeshServerGUI:
             )
 
     def _on_restart(self):
+        # Surface the client-must-restart-too gotcha BEFORE we kill
+        # the server, so the warning sits in the log right next to the
+        # action that triggered it.
+        try:
+            old_n = int((self._running_baseline or {}).get("n_blocks", -1))
+            new_n = int(self.n_blocks_var.get())
+        except Exception:
+            old_n = new_n = -1
+        if old_n >= 0 and new_n >= 0 and new_n < old_n:
+            self._append(
+                f"[gui] *** NOTE *** lowering n_blocks ({old_n} -> {new_n}) "
+                "requires the CLIENT to restart ComfyUI too — the client "
+                "stripped its back-half block weights for the previous run "
+                "and can only reload them from disk by a fresh ComfyUI launch.\n"
+            )
         self._append("[gui] restarting server with new settings...\n")
         self._on_stop()
         # _on_stop blocks on wait/kill, then _on_server_exit resets

@@ -32,7 +32,11 @@ server/
 ├── install.bat                 ← ONE-SHOT INSTALLER — venv + ComfyUI + deps
 ├── requirements.txt            ← what install.bat installs (also for manual use)
 ├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
-├── mesh_server_gui.py          ← Tkinter wrapper — pick file, set n_blocks, click Start.
+│                                  Handles reconfigure messages by writing a handoff
+│                                  file and exiting; GUI relaunches with new --n-blocks.
+├── mesh_server_gui.py          ← Tkinter wrapper. Settings persist to JSON; restart
+│                                  button on form drift; auto-restart on reconfigure;
+│                                  startup trace log captures bat→python wall-clock.
 ├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC + tile_dim)
 ├── protocol.py                 ← length-prefixed TCP framing
 ├── vec_io.py                   ← FLUX.2 vec/modulation tuple (de)serializer
@@ -41,6 +45,9 @@ server/
 │   └── direct/...              ←   compiles its C helper on first import
 ├── smoke_test_server.py        ← validates model load + back-half forward
 ├── install_check.py            ← env pre-flight (deps + cuda + comfy + weights)
+├── _splash.cmd                 ← cmd-console "starting…" splash launched by the
+│                                  GUI bat in parallel with pythonw, polls a sentinel
+│                                  file and self-closes when the GUI window paints
 ├── run_server_gui.bat          ← launch the GUI (recommended for first run)
 ├── run_server.bat              ← headless launcher, no GPU pinning
 ├── run_server_gpu0.bat         ← same-host: pin server to physical GPU 0
@@ -127,6 +134,13 @@ Expected output on success:
 [smoke] OK
 ```
 
+The live server adds one more line right after the slim load when it's
+actually accepting connections:
+
+```
+[server] READY — listening on 0.0.0.0:7777 (n_blocks=4: 4D + 0S)
+```
+
 If this fails, do not launch the live server — debug the smoke test
 first. Common failure modes are listed in the Troubleshooting section
 below.
@@ -160,6 +174,30 @@ Opens a Tkinter window with:
 
 The GUI doesn't add server logic — it just spawns `mesh_server.py`
 with the right args. Same generations, friendlier launch.
+
+While the server is running, **changing any setting** in the form
+flips the Start button into a "Restart server to apply new settings"
+state (wider, bold). Clicking it stops the subprocess and starts it
+fresh with the new values. If you lower `n_blocks` the GUI also
+prints a warning to the log: the *client* still has its previous
+strip applied and needs a ComfyUI restart to pick up the smaller
+value (the client's stripped weights are gone for the session).
+
+The GUI also auto-restarts the server when the **client** asks for a
+new `--n-blocks` (via the Confirm button on the Mesh Split FLUX node).
+The server writes a small handoff file with the new value before
+exiting, the GUI picks it up, updates the spinbox visually, and
+relaunches the subprocess. Net log:
+
+```
+[server] RESTARTING: reconfigure request --n-blocks 4 -> 6
+[server] exiting; GUI launcher will restart with --n-blocks=6
+[gui] server exited (rc=0)
+[gui] server requested reconfigure to n_blocks=6 — applying + restarting...
+[gui] launching: ... --n-blocks 6 ...
+...
+[server] READY — listening on 0.0.0.0:7777 (n_blocks=6: 6D + 0S)
+```
 
 The device dropdown populates asynchronously. On Windows, `nvidia-smi`
 cold-start takes 1-3s (driver + NVML init); rather than block the window
@@ -299,24 +337,40 @@ Two important things to know about same-host setups:
 2. **Both sides slim-load.** The server slim-loads from disk; the
    client strips the back-half block weights from its loaded model
    in place (frees ~half the VRAM on `n_blocks_remote=4` of Klein 9B).
-   If you change `n_blocks_remote` after a generation, force-reload
-   the model on the client — the stripped weights are gone for the
-   session. The node raises if you try without reloading.
+   The server can re-strip up or down on each restart (it just re-reads
+   from disk). The client's strip is one-way for the session:
+   **increasing** `n_blocks_remote` works seamlessly (the strip extends
+   incrementally), **decreasing** would require un-stripping the
+   weights, which are gone, so a fresh ComfyUI launch is needed to
+   re-load them from disk.
+
+3. **Lowering `n_blocks` in the server GUI also requires restarting
+   ComfyUI on the client.** Same reason as above: when the GUI restarts
+   the server with a smaller `--n-blocks`, the *client* still has the
+   bigger strip applied and can't recover. The Mesh Split FLUX node
+   surfaces a "Confirm" button on `n_blocks_remote` mismatch, but
+   confirming with a smaller value only works for the in-flight session
+   if the client's previous strip wasn't already wider — otherwise the
+   inline banner tells you to restart ComfyUI. Increasing in the server
+   GUI is fine: the client's incremental-strip handles it.
 
 ---
 
-## Limitations of v1
+## Limitations
 
-- **One client at a time.** Server is single-tenant. Multi-client
-  support not in scope.
-- **No protocol-level validation.** User is responsible for setting
-  `n_blocks_remote` on the client equal to `--n-blocks` on the server.
-  Mismatch produces wrong output rather than a clean error.
-- **No fault tolerance.** If the connection drops mid-generation, the
-  workflow fails — restart it.
+- **One client at a time.** Server is single-tenant. A second client
+  connecting kicks the first.
 - **Per-timestep wire crossings.** 4 timesteps × 2 directions = 8 wire
   crossings per generation. A future version could overlap codec
   encode with local compute via parallel CUDA streams.
+- **Decreasing `n_blocks_remote` requires the client to restart
+  ComfyUI** even though the server itself can re-strip up or down on
+  every relaunch — see the "same-host" section above for the why.
+- **GUI cold start can take 10-30s on Windows** (Python + venv site
+  init + tkinter DLL load + Defender scan). The cmd-console splash
+  during launch shows you something is happening; see the "Slow GUI
+  startup?" subsection above for the standing fix (Defender exclusions
+  on the venv).
 
 ---
 
