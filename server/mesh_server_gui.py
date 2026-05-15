@@ -220,6 +220,10 @@ class MeshServerGUI:
         # Saved device prefix ("cuda:0") used by _on_devices_ready to
         # restore the user's last selection once nvidia-smi returns.
         self._saved_device_prefix = self.settings.get("device", "")
+        # Snapshot of settings captured the moment the running subprocess
+        # started. When the live form drifts from this snapshot, the
+        # Start button morphs into "Restart server to apply new settings".
+        self._running_baseline: dict | None = None
 
         self._build_ui()
         _log_event("_build_ui complete (window can paint)")
@@ -346,6 +350,15 @@ class MeshServerGUI:
         # Hook file-change to update n_blocks_max
         self.weights_var.trace_add("write", lambda *_: self._refresh_after_file_change())
 
+        # Watch every setting var so we can flip the Start button to
+        # "Restart server to apply new settings" when the form drifts
+        # from the snapshot captured at subprocess launch time.
+        for var in (
+            self.weights_var, self.n_blocks_var, self.port_var, self.bind_var,
+            self.device_var, self.dtype_var, self.lora_var, self.lora_strength_var,
+        ):
+            var.trace_add("write", lambda *_: self._update_start_button_state())
+
     # ----- Window-ready handshake -----
 
     def _on_window_ready(self):
@@ -378,6 +391,38 @@ class MeshServerGUI:
 
     def _persist_settings(self) -> None:
         _save_settings(self._capture_settings())
+
+    # ----- Restart-required button state -----
+
+    def _update_start_button_state(self):
+        """Flip the Start button between three states based on subprocess
+        + form state: idle (Start, enabled), running with no drift
+        (Start, disabled), running with form drift (Restart, enabled)."""
+        if self.proc is None:
+            # Idle state is handled by _on_server_exit; nothing to do here.
+            return
+        baseline = self._running_baseline
+        if baseline is None:
+            return
+        if self._capture_settings() != baseline:
+            self.start_btn.config(
+                text="Restart server to apply new settings",
+                state=NORMAL,
+                command=self._on_restart,
+            )
+        else:
+            self.start_btn.config(
+                text="Start Server",
+                state=DISABLED,
+                command=self._on_start,
+            )
+
+    def _on_restart(self):
+        self._append("[gui] restarting server with new settings...\n")
+        self._on_stop()
+        # _on_stop blocks on wait/kill, then _on_server_exit resets
+        # widget state. Start fresh with the new form values.
+        self._on_start()
 
     # ----- Async device detection -----
 
@@ -536,7 +581,10 @@ class MeshServerGUI:
         )
         self.reader_thread.start()
 
-        self.start_btn.config(state=DISABLED)
+        # Snapshot the form values that drove this launch so future
+        # edits can be detected as drift.
+        self._running_baseline = self._capture_settings()
+        self.start_btn.config(text="Start Server", state=DISABLED, command=self._on_start)
         self.stop_btn.config(state=NORMAL)
         self.status_label.config(text=f"running (pid {self.proc.pid})", fg="#080")
 
@@ -562,7 +610,8 @@ class MeshServerGUI:
 
     def _on_server_exit(self):
         self.proc = None
-        self.start_btn.config(state=NORMAL)
+        self._running_baseline = None
+        self.start_btn.config(text="Start Server", state=NORMAL, command=self._on_start)
         self.stop_btn.config(state=DISABLED)
         self.status_label.config(text="idle", fg="#666")
 

@@ -52,6 +52,16 @@ from . import vec_io
 from . import lora_io
 
 
+class MeshReconnect(Exception):
+    """Raised by MeshClient when a server-side disconnect is detected
+    and the persistent socket has been reset. The per-block replacement
+    closure catches this and rebuilds its LoRA-forwarding bookkeeping
+    (which assumes the server remembers what we shipped last time)
+    before retrying the call. Lets the user restart the server without
+    relaunching ComfyUI."""
+    pass
+
+
 _LAST_STATS: dict = {
     "wire_call_count": 0,
     "bytes_sent": 0,
@@ -199,8 +209,18 @@ class MeshClient:
         bytes_sent = 4 + 4 + len(_dumps_len(header)) + sum(len(b) for b in blobs)
 
         t0 = time.time()
-        protocol.send_message(sock, header, blobs)
-        resp_header, resp_blobs = protocol.recv_message(sock)
+        try:
+            protocol.send_message(sock, header, blobs)
+            resp_header, resp_blobs = protocol.recv_message(sock)
+        except (OSError, EOFError) as e:
+            # Server went away (most likely a restart). Drop the dead
+            # socket and reset LoRA bookkeeping — the new server process
+            # has no memory of which sessions we shipped — then let the
+            # closure rebuild and retry.
+            print(f"[mesh] connection lost to {self.host}:{self.port} ({e}); will reconnect")
+            self.close()
+            self._last_sent_lora_session = ""
+            raise MeshReconnect(str(e)) from e
         elapsed = time.time() - t0
 
         if resp_header.get("kind") != "forward_double_blocks_response":
@@ -279,61 +299,71 @@ def _make_block_replacement(
         # to compute the single-block modulation locally.
         vec_orig = vec_orig_capture.get("vec_orig")
 
-        # ---- Client-LoRA forwarding (optional) ----
-        client_lora_session = ""
-        client_lora_blob = b""
-        if forward_client_loras:
-            patcher = patcher_capture.get("patcher")
-            # When the client is slim-loaded, patches targeting back-half
-            # blocks live in `_mesh_back_half_patches` (split out so
-            # patch_model doesn't try to apply them to the stripped
-            # stubs). Merge them with the live patches dict so the
-            # filter still sees the full picture, then filter+remap.
-            live = getattr(patcher, "patches", None) if patcher is not None else None
-            stashed = getattr(patcher, "_mesh_back_half_patches", None) if patcher is not None else None
-            if live or stashed:
-                combined = dict(live or {})
-                if stashed:
-                    combined.update(stashed)
-                slim_patches = lora_io.filter_and_remap_patches(
-                    combined,
-                    drop_db=drop_db,
-                    n_single_remote=n_single_remote,
-                    n_double_total=n_double_blocks,
-                )
-                client_lora_session = lora_io.patches_session_id(slim_patches)
-            else:
-                # forward toggle on, but no patches loaded — explicit
-                # empty session so the server unpatches anything left over.
-                client_lora_session = "empty"
-
-            # Only encode + ship if the session changed since we last
-            # sent it to THIS client (host, port).
-            if client_lora_session and client_lora_session != client._last_sent_lora_session:
-                if client_lora_session == "empty":
-                    # Signal "no patches" without a blob — server unpatches.
-                    client_lora_blob = b""
+        # Retry once on MeshReconnect. On the second pass through, the
+        # client's _last_sent_lora_session is "" so the LoRA blob gets
+        # rebuilt and re-shipped to the freshly-started server.
+        for attempt in (1, 2):
+            # ---- Client-LoRA forwarding (optional) ----
+            client_lora_session = ""
+            client_lora_blob = b""
+            if forward_client_loras:
+                patcher = patcher_capture.get("patcher")
+                # When the client is slim-loaded, patches targeting back-half
+                # blocks live in `_mesh_back_half_patches` (split out so
+                # patch_model doesn't try to apply them to the stripped
+                # stubs). Merge them with the live patches dict so the
+                # filter still sees the full picture, then filter+remap.
+                live = getattr(patcher, "patches", None) if patcher is not None else None
+                stashed = getattr(patcher, "_mesh_back_half_patches", None) if patcher is not None else None
+                if live or stashed:
+                    combined = dict(live or {})
+                    if stashed:
+                        combined.update(stashed)
+                    slim_patches = lora_io.filter_and_remap_patches(
+                        combined,
+                        drop_db=drop_db,
+                        n_single_remote=n_single_remote,
+                        n_double_total=n_double_blocks,
+                    )
+                    client_lora_session = lora_io.patches_session_id(slim_patches)
                 else:
-                    client_lora_blob = lora_io.encode_patches_to_safetensors(slim_patches)
-                # Mark sent regardless of whether the blob has bytes
-                client._last_sent_lora_session = client_lora_session
+                    # forward toggle on, but no patches loaded — explicit
+                    # empty session so the server unpatches anything left over.
+                    client_lora_session = "empty"
 
-        new_img, new_txt = client.call_double_blocks(
-            img=img,
-            txt=txt,
-            vec=vec,
-            vec_orig=vec_orig,
-            pe=pe,
-            attn_mask=attn_mask,
-            start_block=split_index,
-            codec_mode=codec_mode,
-            codec_qp=codec_qp,
-            codec_lossless=codec_lossless,
-            codec_tile_dim=codec_tile_dim,
-            client_lora_session=client_lora_session,
-            client_lora_blob=client_lora_blob,
-        )
-        return {"img": new_img, "txt": new_txt}
+                # Only encode + ship if the session changed since we last
+                # sent it to THIS client (host, port).
+                if client_lora_session and client_lora_session != client._last_sent_lora_session:
+                    if client_lora_session == "empty":
+                        # Signal "no patches" without a blob — server unpatches.
+                        client_lora_blob = b""
+                    else:
+                        client_lora_blob = lora_io.encode_patches_to_safetensors(slim_patches)
+                    # Mark sent regardless of whether the blob has bytes
+                    client._last_sent_lora_session = client_lora_session
+
+            try:
+                new_img, new_txt = client.call_double_blocks(
+                    img=img,
+                    txt=txt,
+                    vec=vec,
+                    vec_orig=vec_orig,
+                    pe=pe,
+                    attn_mask=attn_mask,
+                    start_block=split_index,
+                    codec_mode=codec_mode,
+                    codec_qp=codec_qp,
+                    codec_lossless=codec_lossless,
+                    codec_tile_dim=codec_tile_dim,
+                    client_lora_session=client_lora_session,
+                    client_lora_blob=client_lora_blob,
+                )
+            except MeshReconnect:
+                if attempt == 2:
+                    raise
+                print("[mesh] retrying after reconnect")
+                continue
+            return {"img": new_img, "txt": new_txt}
 
     return replace_at_split
 
