@@ -418,6 +418,43 @@ def _install_vec_orig_hook(diffusion_model, capture_dict):
     mod._mesh_vec_orig_hook = mod.register_forward_pre_hook(hook)
 
 
+def _trigger_comfy_free_cache() -> bool:
+    """Hit ComfyUI's /free endpoint — same effect as clicking
+    'Free model and node cache' in the UI. Sets the unload_models +
+    free_memory flags on the prompt queue, which evicts the cached
+    MODEL output so the next queued prompt re-executes UNETLoader
+    from disk.
+
+    Returns True on success. On any failure, returns False so the
+    caller can fall back to telling the user to click the button."""
+    try:
+        import json as _json
+        import urllib.request
+
+        port = 8188
+        try:
+            import server as _comfy_server
+            inst = getattr(_comfy_server.PromptServer, "instance", None)
+            if inst is not None:
+                port = int(getattr(inst, "port", 8188) or 8188)
+        except Exception:
+            pass
+
+        body = _json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/free",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
+        return True
+    except Exception as e:
+        print(f"[mesh] auto-free via /free endpoint failed ({e})")
+        return False
+
+
 def _capture_block_param_signature(block: nn.Module) -> dict:
     """Snapshot {leaf_name: (shape, dtype)} for every parameter and
     buffer in a block. Used at strip time so the stub can reproduce
@@ -524,12 +561,25 @@ def _strip_diffusion_back_half(
             return 0  # already stripped for this exact config
         if prior_db > n_double_remote or prior_sb > n_single_remote:
             # Decrease — would need to un-strip, but those weights are gone.
+            # Auto-trigger ComfyUI's "Free model and node cache" so the
+            # next re-queue runs UNETLoader fresh and produces an
+            # unstripped MODEL.
+            freed = _trigger_comfy_free_cache()
+            if freed:
+                raise RuntimeError(
+                    f"Decrease detected (was {prior_db} doubles + {prior_sb} singles, "
+                    f"now {n_double_remote} + {n_single_remote}). Already-stripped "
+                    "weights are gone, so ComfyUI's model cache has been cleared "
+                    "automatically. **Re-queue your workflow** to reload the model "
+                    "fresh and apply the new n_blocks_remote."
+                )
             raise RuntimeError(
                 f"Mesh-stripped at ({prior_db} doubles, {prior_sb} singles); "
                 f"can't decrease to ({n_double_remote}, {n_single_remote}) — "
-                "the stripped weights are gone. Reload the model (force-reset "
-                "the UNETLoader node, or restart ComfyUI) to decrease "
-                "n_blocks_remote. (Increasing it works without reload.)"
+                "the stripped weights are gone, and the auto-cache-clear via "
+                "ComfyUI's /free endpoint failed. Click 'Free model and node "
+                "cache' in the ComfyUI menu, then re-queue. "
+                "(Increasing n_blocks_remote works without any reload.)"
             )
         # Increase on at least one axis. Strip only the NEWLY-back-half blocks.
         # Doubles: new range extends the strip earlier in the stack.

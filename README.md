@@ -235,15 +235,18 @@ What's known and stable today:
   come BEFORE `Mesh Split FLUX` in the graph. After-Mesh patches don't
   propagate to the captured patcher reference. Tooltip on the node
   warns about this.
-- **Decreasing `n_blocks_remote` mid-session requires a model reload.**
-  The client slim-load strips back-half block weights in place to free
-  VRAM (the whole point — the server already has those blocks, the
-  client doesn't need to hold them too). **Increasing** `n_blocks_remote`
-  works without a reload — the strip extends incrementally to cover
-  more blocks. **Decreasing** would require un-stripping, but the
-  weights are gone for the session, so the node raises a clear error
-  pointing you at the "Free model and node cache" button. Same goes
-  for removing the Mesh Split FLUX node entirely after a generation.
+- **Decreasing `n_blocks_remote` triggers an auto model-cache clear;
+  just re-queue.** The client slim-load strips back-half block weights
+  in place to free VRAM (the whole point — the server already has
+  those blocks, the client doesn't need to hold them too).
+  **Increasing** `n_blocks_remote` works seamlessly — the strip extends
+  incrementally to cover more blocks, no reload needed. **Decreasing**
+  would require un-stripping, but those weights are gone, so the node
+  POSTs to ComfyUI's `/free` endpoint (same as clicking "Free model
+  and node cache"), then raises asking you to re-queue. The re-queue
+  re-runs UNETLoader fresh and the new (smaller) `n_blocks_remote`
+  applies to the freshly-loaded model. Same flow if you remove the
+  Mesh Split FLUX node entirely after a generation.
 - **Sequential request/response.** No CUDA-stream overlap of codec
   work with compute. The FLUX sampler is inherently sequential per
   timestep, so this caps the headroom anyway.
