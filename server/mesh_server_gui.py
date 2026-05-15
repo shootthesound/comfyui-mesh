@@ -20,6 +20,12 @@ or
 
 from __future__ import annotations
 
+# Capture the launch timestamp before any heavy imports so the startup
+# log can attribute the time spent in tkinter/Tcl initialization too.
+import time as _time
+_GUI_LAUNCH_T0 = _time.perf_counter()
+
+import json
 import os
 import queue
 import signal
@@ -35,6 +41,55 @@ from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
 HERE = Path(__file__).parent
+SETTINGS_FILE = HERE / "mesh_server_gui_settings.json"
+STARTUP_LOG = HERE / "mesh_server_gui_startup.log"
+
+
+def _log_session_header() -> None:
+    """Truncate the startup log and write a fresh session header.
+    Called once on every GUI launch — only the most recent startup
+    is kept on disk."""
+    try:
+        import platform
+        with STARTUP_LOG.open("w", encoding="utf-8") as f:
+            f.write("=== mesh_server_gui startup log ===\n")
+            f.write(f"local time : {_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"python     : {sys.executable}\n")
+            f.write(f"version    : {sys.version.split()[0]}\n")
+            f.write(f"platform   : {platform.platform()}\n")
+            f.write("---\n")
+    except Exception:
+        pass
+
+
+def _log_event(msg: str) -> None:
+    """Append one timestamped line to the startup log. Used to localise
+    where the 10-40s startup time is being spent (typically Python
+    cold-start + tkinter/Tcl DLL load + Windows Defender scan)."""
+    try:
+        elapsed = _time.perf_counter() - _GUI_LAUNCH_T0
+        with STARTUP_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"[+{elapsed:7.3f}s] {msg}\n")
+    except Exception:
+        pass
+
+
+_log_session_header()
+_log_event("module imports complete")
+
+
+def _load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_settings(settings: dict) -> None:
+    try:
+        SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------
@@ -122,6 +177,7 @@ def find_comfyui_path() -> str | None:
 
 class MeshServerGUI:
     def __init__(self, root: Tk):
+        _log_event("MeshServerGUI.__init__ entered")
         self.root = root
         root.title("comfyui-mesh — back-half server")
         root.geometry("780x560")
@@ -129,9 +185,20 @@ class MeshServerGUI:
         self.proc: subprocess.Popen | None = None
         self.output_q: queue.Queue = queue.Queue()
         self.reader_thread: threading.Thread | None = None
+        self.settings = _load_settings()
+        # Saved device prefix ("cuda:0") used by _on_devices_ready to
+        # restore the user's last selection once nvidia-smi returns.
+        self._saved_device_prefix = self.settings.get("device", "")
 
         self._build_ui()
-        self._refresh_after_file_change()
+        _log_event("_build_ui complete (window can paint)")
+        # The startup safetensors-header read happens off-thread so even
+        # a slow first read (cold cache on a multi-GB checkpoint) doesn't
+        # delay the window paint.
+        if self.weights_var.get().strip():
+            threading.Thread(target=self._refresh_after_file_change, daemon=True).start()
+        else:
+            self._refresh_after_file_change()
         self.root.after(100, self._poll_output)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -140,11 +207,13 @@ class MeshServerGUI:
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
 
+        s = self.settings
+
         # Row: weights file picker
         row = Frame(self.root)
         row.pack(fill=X, **pad)
         Label(row, text="Model:", width=12, anchor="w").pack(side=LEFT)
-        self.weights_var = StringVar(value="")
+        self.weights_var = StringVar(value=s.get("weights", ""))
         self.weights_entry = Entry(row, textvariable=self.weights_var)
         self.weights_entry.pack(side=LEFT, fill=X, expand=True, padx=4)
         Button(row, text="Browse…", command=self._on_browse).pack(side=LEFT)
@@ -153,7 +222,7 @@ class MeshServerGUI:
         row = Frame(self.root)
         row.pack(fill=X, **pad)
         Label(row, text="n_blocks:", width=12, anchor="w").pack(side=LEFT)
-        self.n_blocks_var = IntVar(value=4)
+        self.n_blocks_var = IntVar(value=int(s.get("n_blocks", 4)))
         self.n_blocks_spin = ttk.Spinbox(
             row, from_=0, to=999, increment=1, textvariable=self.n_blocks_var, width=8,
         )
@@ -165,9 +234,9 @@ class MeshServerGUI:
         row = Frame(self.root)
         row.pack(fill=X, **pad)
         Label(row, text="Port:", width=12, anchor="w").pack(side=LEFT)
-        self.port_var = IntVar(value=7777)
+        self.port_var = IntVar(value=int(s.get("port", 7777)))
         ttk.Spinbox(row, from_=1, to=65535, increment=1, textvariable=self.port_var, width=8).pack(side=LEFT)
-        self.bind_var = StringVar(value="0.0.0.0")
+        self.bind_var = StringVar(value=s.get("bind", "0.0.0.0"))
         Label(row, text="  Bind:", anchor="w").pack(side=LEFT, padx=(16, 4))
         Entry(row, textvariable=self.bind_var, width=18).pack(side=LEFT)
 
@@ -188,7 +257,7 @@ class MeshServerGUI:
         row = Frame(self.root)
         row.pack(fill=X, **pad)
         Label(row, text="dtype:", width=12, anchor="w").pack(side=LEFT)
-        self.dtype_var = StringVar(value="bfloat16")
+        self.dtype_var = StringVar(value=s.get("dtype", "bfloat16"))
         ttk.Combobox(
             row, textvariable=self.dtype_var,
             values=["bfloat16", "float16", "float32"], state="readonly", width=18,
@@ -207,7 +276,7 @@ class MeshServerGUI:
         row = Frame(self.root)
         row.pack(fill=X, **pad)
         Label(row, text="LoRA:", width=12, anchor="w").pack(side=LEFT)
-        self.lora_var = StringVar(value="")
+        self.lora_var = StringVar(value=s.get("lora", ""))
         Entry(row, textvariable=self.lora_var).pack(side=LEFT, fill=X, expand=True, padx=4)
         Button(row, text="Browse…", command=self._on_browse_lora).pack(side=LEFT)
         Button(row, text="Clear", command=lambda: self.lora_var.set("")).pack(side=LEFT, padx=4)
@@ -215,7 +284,7 @@ class MeshServerGUI:
         row = Frame(self.root)
         row.pack(fill=X, **pad)
         Label(row, text="LoRA strength:", width=12, anchor="w").pack(side=LEFT)
-        self.lora_strength_var = StringVar(value="1.0")
+        self.lora_strength_var = StringVar(value=s.get("lora_strength", "1.0"))
         ttk.Spinbox(
             row, from_=-2.0, to=2.0, increment=0.1,
             textvariable=self.lora_strength_var, width=8,
@@ -242,23 +311,54 @@ class MeshServerGUI:
         # Hook file-change to update n_blocks_max
         self.weights_var.trace_add("write", lambda *_: self._refresh_after_file_change())
 
+    # ----- Settings persistence -----
+
+    def _capture_settings(self) -> dict:
+        try:
+            n_blocks = int(self.n_blocks_var.get())
+        except Exception:
+            n_blocks = 4
+        try:
+            port = int(self.port_var.get())
+        except Exception:
+            port = 7777
+        return {
+            "weights": self.weights_var.get().strip(),
+            "n_blocks": n_blocks,
+            "port": port,
+            "bind": self.bind_var.get().strip(),
+            "device": self.device_var.get().split(" ", 1)[0],
+            "dtype": self.dtype_var.get(),
+            "lora": self.lora_var.get().strip(),
+            "lora_strength": self.lora_strength_var.get().strip(),
+        }
+
+    def _persist_settings(self) -> None:
+        _save_settings(self._capture_settings())
+
     # ----- Async device detection -----
 
     def _populate_devices_async(self):
         def worker():
+            _log_event("nvidia-smi worker started")
             devices = detect_gpus() + ["cpu"]
+            _log_event(f"nvidia-smi worker returned {len(devices)} entries")
             self.root.after(0, lambda: self._on_devices_ready(devices))
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_devices_ready(self, devices: list[str]):
-        current = self.device_var.get()
+        # Prefer the saved device prefix from last run; if no saved value,
+        # fall back to whatever the placeholder combobox currently shows.
+        saved = (self._saved_device_prefix or "").strip()
+        current_prefix = saved or self.device_var.get().split(" ", 1)[0]
         self.device_combo.config(values=devices)
-        current_prefix = current.split(" ", 1)[0] if current else ""
         for d in devices:
             if d.split(" ", 1)[0] == current_prefix:
                 self.device_var.set(d)
+                _log_event(f"device combobox populated; selected '{d}'")
                 return
         self.device_combo.current(0)
+        _log_event("device combobox populated; default selection")
 
     # ----- Actions -----
 
@@ -292,9 +392,11 @@ class MeshServerGUI:
         if not path or not Path(path).is_file():
             self.n_blocks_info.config(text="(pick a model file to see max)")
             return
+        _log_event(f"reading safetensors header for n_blocks_max ({Path(path).name})")
         info = detect_n_blocks_max(Path(path))
         if info is None:
             self.n_blocks_info.config(text="(could not read header)")
+            _log_event("n_blocks_max read failed")
             return
         n_double, n_single = info
         n_max = n_double + n_single
@@ -307,6 +409,7 @@ class MeshServerGUI:
                   f"1-{n_double}=last N doubles, "
                   f"{n_double + 1}-{n_max}=all doubles + first (N-{n_double}) singles)")
         )
+        _log_event(f"n_blocks_max ready: {n_double}+{n_single}={n_max}")
 
     def _on_start(self):
         weights = self.weights_var.get().strip()
@@ -362,6 +465,10 @@ class MeshServerGUI:
                 messagebox.showerror("comfyui-mesh", "LoRA strength must be a number.")
                 return
             cmd += ["--lora", lora_path, "--lora-strength", str(lora_strength)]
+
+        # Persist settings on a successful launch attempt so next open
+        # restores the same configuration.
+        self._persist_settings()
 
         self._append(f"\n[gui] launching: {' '.join(cmd)}\n")
         self._append(f"[gui] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', '(unset)')}\n\n")
@@ -454,13 +561,18 @@ class MeshServerGUI:
             if not messagebox.askyesno("comfyui-mesh", "Server is running. Stop it and quit?"):
                 return
             self._on_stop()
+        self._persist_settings()
         self.root.destroy()
 
 
 def main():
+    _log_event("Tk() about to construct")
     root = Tk()
+    _log_event("Tk() constructed")
     MeshServerGUI(root)
+    _log_event("entering Tk mainloop")
     root.mainloop()
+    _log_event("Tk mainloop returned (window closed)")
 
 
 if __name__ == "__main__":

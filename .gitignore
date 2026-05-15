@@ -14,3 +14,6 @@ __pycache__/
 # scratch
 *.log
 *.tmp
+
+# per-user GUI state
+mesh_server_gui_settings.json

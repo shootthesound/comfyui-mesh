@@ -168,6 +168,27 @@ fills in the real device list (with card names) once `nvidia-smi` returns.
 If you click the dropdown within that first second you'll see the
 placeholder; it refreshes shortly after.
 
+GUI settings (model path, n_blocks, port, bind, device, dtype, LoRA
+path, LoRA strength) are remembered between launches in
+`mesh_server_gui_settings.json` next to the script. Saved on close and
+on Start. Delete the file to reset to defaults.
+
+### Slow GUI startup?
+
+Each launch writes a timestamped trace to
+`mesh_server_gui_startup.log` (truncated each run). If the GUI takes
+more than a few seconds to appear, check the log for where time was
+spent. Typical culprits:
+
+- **Windows Defender scanning the venv `python.exe` and `_tkinter.pyd`**
+  the first time after boot — easily 5-30s. The standing fix is to
+  add the server folder (or at least `.venv\Scripts\` and
+  `.venv\Lib\site-packages\`) to Defender's exclusions.
+- **Cold-cache safetensors header read** for a multi-GB checkpoint when
+  a saved model path is restored at launch. This is now done on a
+  background thread so the window paints first; the n_blocks_max
+  display fills in once the read returns.
+
 ### Option B: Headless launchers
 
 Each bat file has an editable line at the top:
