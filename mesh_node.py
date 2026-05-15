@@ -791,8 +791,8 @@ class MeshSplitFlux:
                                            "tooltip": (
                                                "Hostname or IP of the back-half server. "
                                                "127.0.0.1 = same machine (e.g. two GPUs). "
-                                               "192.168.x.x = LAN. 100.x.x.x = Tailscale. "
-                                               "Public IP / DNS name = remote internet host."
+                                               "Possible examples: 192.168.x.x = LAN. "
+                                               "100.x.x.x = VPN etc."
                                            )}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535,
                                         "tooltip": "TCP port the back-half server is listening on. Default 7777."}),
