@@ -33,10 +33,12 @@ Two registered nodes:
 
 from __future__ import annotations
 
+import gc
 import socket
 import time
 
 import torch
+from torch import nn
 
 # Package-relative imports so we always pick up the node's own
 # codec / protocol / vec_io files, regardless of sys.path ordering.
@@ -282,12 +284,19 @@ def _make_block_replacement(
         client_lora_blob = b""
         if forward_client_loras:
             patcher = patcher_capture.get("patcher")
-            if patcher is not None and getattr(patcher, "patches", None):
-                # Filter the live patches dict to only the keys targeting
-                # server-held layers, with double_block indices remapped
-                # to the slim model's coords.
+            # When the client is slim-loaded, patches targeting back-half
+            # blocks live in `_mesh_back_half_patches` (split out so
+            # patch_model doesn't try to apply them to the stripped
+            # stubs). Merge them with the live patches dict so the
+            # filter still sees the full picture, then filter+remap.
+            live = getattr(patcher, "patches", None) if patcher is not None else None
+            stashed = getattr(patcher, "_mesh_back_half_patches", None) if patcher is not None else None
+            if live or stashed:
+                combined = dict(live or {})
+                if stashed:
+                    combined.update(stashed)
                 slim_patches = lora_io.filter_and_remap_patches(
-                    patcher.patches,
+                    combined,
                     drop_db=drop_db,
                     n_single_remote=n_single_remote,
                     n_double_total=n_double_blocks,
@@ -379,9 +388,165 @@ def _install_vec_orig_hook(diffusion_model, capture_dict):
     mod._mesh_vec_orig_hook = mod.register_forward_pre_hook(hook)
 
 
+def _capture_block_param_signature(block: nn.Module) -> dict:
+    """Snapshot {leaf_name: (shape, dtype)} for every parameter and
+    buffer in a block. Used at strip time so the stub can reproduce
+    the same state_dict keys ComfyUI's LoRA mapper expects."""
+    sig: dict = {}
+    for name, param in block.named_parameters():
+        sig[name] = (tuple(param.shape), param.dtype)
+    for name, buf in block.named_buffers():
+        sig[name] = (tuple(buf.shape), buf.dtype)
+    return sig
+
+
+class MeshRemoteStub(nn.Module):
+    """Placeholder for a transformer block that runs on the remote
+    mesh server. Holds NO parameters (zero VRAM), and its forward is
+    never supposed to be invoked — patches_replace short-circuits
+    these slots to the wire.
+
+    Crucially, the stub still REPORTS the original block's param
+    names in state_dict, with zero-storage tensors. ComfyUI's
+    `comfy.lora.model_lora_keys_unet` walks state_dict keys to build
+    the LoRA-key → model-key map; if the back-half keys vanished,
+    every back-half LoRA key would log "lora key not loaded" and the
+    server would never receive the LoRA. The synthetic entries cost
+    nothing and keep the LoRA pipeline whole.
+    """
+
+    _mesh_stub = True
+
+    def __init__(self, param_sig: dict | None = None):
+        super().__init__()
+        self._mesh_param_sig = param_sig or {}
+
+    def _save_to_state_dict(self, destination, prefix, keep_vars):
+        # Emit a zero-storage tensor at every key the original block had.
+        # model_lora_keys_unet only iterates `.keys()`, so the value is
+        # immaterial — but we keep the dtype right so downstream
+        # introspection (size estimation, dtype reporting) doesn't choke.
+        for leaf_name, (_shape, dtype) in self._mesh_param_sig.items():
+            destination[prefix + leaf_name] = torch.empty(0, dtype=dtype)
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict,
+        missing_keys, unexpected_keys, error_msgs,
+    ):
+        # Silently consume any keys destined for this stub so that a
+        # strict load_state_dict() round-trip doesn't blow up on the
+        # synthetic entries. Nothing to actually load — the block lives
+        # on the server.
+        for k in [k for k in state_dict.keys() if k.startswith(prefix)]:
+            state_dict.pop(k, None)
+
+    def forward(self, *args, **kwargs):
+        raise RuntimeError(
+            "MeshRemoteStub.forward called — patches_replace did not "
+            "intercept this block. Check that n_blocks_remote on the "
+            "node matches the count of stripped blocks."
+        )
+
+
+def _strip_diffusion_back_half(
+    diffusion: nn.Module,
+    n_double_remote: int,
+    n_single_remote: int,
+):
+    """Replace the back-half double_blocks and front N single_blocks
+    with parameter-less stubs, freeing their VRAM. Mutates the shared
+    nn.Module in place — see the comment in MeshSplitFlux.configure for
+    the cache-trade reasoning.
+
+    Idempotent for matching configs (so re-running the workflow doesn't
+    re-strip); raises clearly if asked to re-strip with a DIFFERENT
+    config (the original block weights are gone, so we can't satisfy a
+    different split point without a model reload)."""
+    n_total_doubles = len(diffusion.double_blocks)
+    n_total_singles = len(diffusion.single_blocks)
+    requested = (n_double_remote, n_single_remote, n_total_doubles, n_total_singles)
+
+    prior = getattr(diffusion, "_mesh_strip_config", None)
+    if prior is not None:
+        if prior == requested:
+            return 0  # already stripped for this exact config
+        raise RuntimeError(
+            f"Model is already mesh-stripped for "
+            f"({prior[0]} doubles, {prior[1]} singles) and the stripped "
+            f"weights are gone. You asked for ({n_double_remote}, "
+            f"{n_single_remote}). Reload the model (force-reset the "
+            f"UNETLoader node, or restart ComfyUI) before changing "
+            f"n_blocks_remote."
+        )
+
+    # Strip the LAST n_double_remote doubles (server runs them). Capture
+    # each block's parameter signature first so the stub can keep
+    # presenting those keys in state_dict (LoRA mapping needs them).
+    drop_db = n_total_doubles - n_double_remote
+    for i in range(drop_db, n_total_doubles):
+        sig = _capture_block_param_signature(diffusion.double_blocks[i])
+        diffusion.double_blocks[i] = MeshRemoteStub(sig)
+
+    # Strip the FIRST n_single_remote singles (server runs the leading
+    # singles after the doubles per wire semantics; client keeps the tail).
+    for i in range(n_single_remote):
+        sig = _capture_block_param_signature(diffusion.single_blocks[i])
+        diffusion.single_blocks[i] = MeshRemoteStub(sig)
+
+    diffusion._mesh_strip_config = requested
+
+    # Drop the now-orphaned tensors from CUDA's caching allocator.
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return (n_double_remote + n_single_remote)
+
+
+def _split_back_half_patches(
+    patcher,
+    n_double_remote: int,
+    n_single_remote: int,
+    n_total_doubles: int,
+):
+    """Pull patches that target now-stripped blocks out of
+    patcher.patches and stash them on patcher._mesh_back_half_patches.
+    ComfyUI's patch_model would otherwise try to apply them to the
+    stubs and crash; the wire forwarder reads them from the stash to
+    ship to the server.
+
+    Front-half block patches, encoder patches, and final_layer patches
+    stay in patcher.patches and apply locally as normal."""
+    drop_db = n_total_doubles - n_double_remote
+    back: dict = getattr(patcher, "_mesh_back_half_patches", None) or {}
+    moved: list[str] = []
+    for key in list(patcher.patches.keys()):
+        if not key.startswith("diffusion_model."):
+            continue
+        sub = key[len("diffusion_model."):]
+        if sub.startswith("double_blocks."):
+            try:
+                idx = int(sub.split(".")[1])
+            except (ValueError, IndexError):
+                continue
+            if idx >= drop_db:
+                moved.append(key)
+        elif sub.startswith("single_blocks."):
+            try:
+                idx = int(sub.split(".")[1])
+            except (ValueError, IndexError):
+                continue
+            if idx < n_single_remote:
+                moved.append(key)
+    for k in moved:
+        back[k] = patcher.patches.pop(k)
+    patcher._mesh_back_half_patches = back
+    return len(moved)
+
+
 class MeshSplitFlux:
-    """Configure FLUX double-block split between local 5090 and a
-    remote 4090 server. Pass-through MODEL node — slot it between the
+    """Configure FLUX double-block split between the local GPU and a
+    remote mesh server. Pass-through MODEL node — slot it between the
     model loader and the sampler."""
 
     @classmethod
@@ -471,11 +636,30 @@ class MeshSplitFlux:
         vec_orig_capture: dict = {"vec_orig": None}
         _install_vec_orig_hook(diffusion, vec_orig_capture)
 
+        # Free VRAM held by back-half block weights. This mutates the
+        # shared diffusion_model in place — clone() does NOT deep-copy
+        # the nn.Module, so the change is visible to any cached MODEL
+        # reference too. The trade: if the user removes this node or
+        # changes n_blocks_remote, they must reload the model (the
+        # original weights are gone). _strip_diffusion_back_half is
+        # idempotent for identical configs and raises clearly otherwise.
+        if n_blocks_remote > 0:
+            stripped = _strip_diffusion_back_half(diffusion, n_double_remote, n_single_remote)
+            if stripped:
+                print(f"[mesh] stripped {n_double_remote} double_blocks + "
+                      f"{n_single_remote} single_blocks from client VRAM")
+
         # ModelPatcher copy + register the per-block overrides via the
         # canonical comfy.model_patcher API. Using set_model_patch_replace
         # rather than mutating model_options directly so we don't fight
         # the ModelPatcher's copy-on-write semantics.
         m = model.clone()
+
+        # Move patches targeting now-stripped blocks out of m.patches so
+        # ComfyUI's patch_model doesn't try to apply them to the stubs.
+        # The wire forwarder reads them back from _mesh_back_half_patches.
+        if n_blocks_remote > 0:
+            _split_back_half_patches(m, n_double_remote, n_single_remote, n_double_blocks)
 
         # Capture the (post-clone) patcher reference so the per-call
         # closure can introspect its .patches dict at sample time. This
@@ -576,6 +760,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MeshSplitFlux": "Mesh Split FLUX (5090 ↔ 4090)",
+    "MeshSplitFlux": "Mesh Split FLUX",
     "MeshStatus": "Mesh Status",
 }

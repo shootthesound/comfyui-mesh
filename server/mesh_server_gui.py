@@ -176,12 +176,14 @@ class MeshServerGUI:
         row.pack(fill=X, **pad)
         Label(row, text="Device:", width=12, anchor="w").pack(side=LEFT)
         self.device_var = StringVar()
-        device_choices = detect_gpus() + ["cpu"]
+        # nvidia-smi cold start blocks 1-3s on Windows; populate async so the window paints first.
         self.device_combo = ttk.Combobox(
-            row, textvariable=self.device_var, values=device_choices, state="readonly", width=42,
+            row, textvariable=self.device_var,
+            values=["cuda:0", "cpu"], state="readonly", width=42,
         )
         self.device_combo.current(0)
         self.device_combo.pack(side=LEFT)
+        self._populate_devices_async()
 
         row = Frame(self.root)
         row.pack(fill=X, **pad)
@@ -239,6 +241,24 @@ class MeshServerGUI:
 
         # Hook file-change to update n_blocks_max
         self.weights_var.trace_add("write", lambda *_: self._refresh_after_file_change())
+
+    # ----- Async device detection -----
+
+    def _populate_devices_async(self):
+        def worker():
+            devices = detect_gpus() + ["cpu"]
+            self.root.after(0, lambda: self._on_devices_ready(devices))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_devices_ready(self, devices: list[str]):
+        current = self.device_var.get()
+        self.device_combo.config(values=devices)
+        current_prefix = current.split(" ", 1)[0] if current else ""
+        for d in devices:
+            if d.split(" ", 1)[0] == current_prefix:
+                self.device_var.set(d)
+                return
+        self.device_combo.current(0)
 
     # ----- Actions -----
 

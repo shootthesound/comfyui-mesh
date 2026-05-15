@@ -1,15 +1,21 @@
 # comfyui-mesh
 
-**Split a diffusion model across two GPUs over a network. The
-activations between them get compressed live by NVIDIA's idle video
-codec silicon.**
+**Split a diffusion model across two GPUs — either over a gigabit
+network OR between two cards in the same machine. The activations
+between them get compressed live by NVIDIA's idle video codec
+silicon.**
 
-A 9 GB FLUX.2 model running on a 5090 desktop with its back half
-offloaded to a 4090 elsewhere on the LAN. Or two cards in the same box
-without NVLink. Or your friend's GPU over Tailscale. The bandwidth that
-would normally make this miserable stops being the bottleneck because
-NVENC compresses the bytes on the wire while they're already on the
-GPU.
+
+A 9 GB FLUX.2 model running on one Nvidia card with its back half
+offloaded to another Nvidia card elsewhere on the LAN. **Any modern
+Nvidia GPU with NVENC works** — 3080 + 4080, 4070 + 5070, 5090 + 4090,
+whatever you have. The two cards don't have to be the same model or
+generation. Or two cards in the same box without NVLink. Or your
+friend's GPU over Tailscale. The bandwidth that would normally make
+this miserable stops being the bottleneck because NVENC compresses the
+bytes on the wire while they're already on the GPU.
+
+
 
 ```
                 ┌─────────────────┐                     ┌─────────────────┐
@@ -51,8 +57,10 @@ That's it. The rest is plumbing.
 
 ## What works today
 
-- **FLUX.2 (any variant)** — Klein 9B, dev, schnell, whatever Black
-  Forest Labs ships under the FLUX.2 architecture. Tested end-to-end.
+- **FLUX.2 Klein 9B and FLUX.2 dev.** These are the two FLUX.2
+  checkpoints Black Forest Labs ships today; both tested end-to-end.
+  (FLUX.1 schnell is a separate architecture and is on the roadmap
+  below, not in this list.)
 - **LoRAs**: any format ComfyUI itself supports — Kohya, Diffusers PEFT,
   BFL Flux, USO, Wan Fun, SimpleTuner, native, etc. Includes the full
   weight-adapter family: **lora, loha, lokr, glora, oft, boft**, plus
@@ -75,8 +83,9 @@ writing. Top of the queue when community demand says go:
 - **SD3 / SD3.5** — MMDiT, related architecture
 - **HunyuanVideo / Qwen-Image / Chroma** — each has its own quirks
 
-**If you want one of these added, support the project** (link below) and
-tell me which — community demand drives the priority list.
+If you want one of these added, **please consider supporting the
+project** (link below) and tell me which — community demand drives
+the priority list.
 
 ---
 
@@ -170,7 +179,7 @@ overkill and adds latency. Set `codec_mode = raw` for same-host pairs.
 
 ## What the two nodes do
 
-### `Mesh Split FLUX (5090 ↔ 4090)`
+### `Mesh Split FLUX`
 
 Pass-through MODEL node. Slot it between the model loader (or
 LoraLoader) and the sampler. Its parameters:
@@ -197,25 +206,23 @@ the ComfyUI console.
 
 ## Honest performance numbers
 
-Measured on FLUX.2 Klein 9B distilled (1024×1024, 4 sampler steps), RTX
-5090 client, RTX 4090 server, gigabit LAN, `tile_dim=4` everywhere:
+End-to-end wall-clock numbers are being re-measured against the
+client-side slim-load (which just landed) on FLUX.2 Klein 9B distilled,
+1024×1024, 4 sampler steps, RTX 5090 client + RTX 4090 server over
+gigabit LAN with `tile_dim=4`. Updating this section as soon as the
+real numbers are in.
 
-| Setup | Wire / step | Total per generation | vs all-local |
-|---|---:|---:|---:|
-| Local only (5090) | — | ~14 s | baseline |
-| Mesh, half-and-half (n=4) | ~10 MB | ~16 s | ~14% slower |
-| Mesh, all remote (n=32) | ~12 MB | ~20 s | ~40% slower |
-| Same-host PCIe `raw` (n=4) | ~32 MB (raw) | ~15 s | ~7% slower |
+What's known and stable today:
 
-These reflect the codec overhead — about 130 ms per wire round-trip at
-QP=18 thanks to channel tiling + per-channel quant. The wire payload
-itself is small enough that gigabit ethernet isn't the bottleneck.
-
-**Quality**: cosine similarity > 0.995 per round-trip at QP=18. Output
-is visually indistinguishable from all-local at the same seed for any
-QP up to 28 (FLUX's residual stream absorbs codec noise comfortably —
-this is the load-bearing architectural assumption the whole rig
-depends on).
+- Wire round-trip ~130 ms at QP=18 / `tile_dim=4` (codec encode + LAN +
+  remote forward + LAN + codec decode), measured per timestep.
+- Wire payload ~10–12 MB per direction at QP=18 — well within gigabit
+  ethernet's headroom, so the link isn't the bottleneck.
+- Codec quality: cosine similarity > 0.995 per round-trip at QP=18 on
+  real FLUX activations. Output is visually indistinguishable from
+  all-local at the same seed for any QP up to 28 — FLUX's residual
+  stream absorbs codec noise comfortably (the load-bearing
+  architectural assumption the whole rig depends on).
 
 ---
 
@@ -228,12 +235,15 @@ depends on).
   come BEFORE `Mesh Split FLUX` in the graph. After-Mesh patches don't
   propagate to the captured patcher reference. Tooltip on the node
   warns about this.
-- **No back-half VRAM saving on the client side yet.** ComfyUI on the
-  client loads the full model normally; back-half blocks then sit
-  unused in VRAM because the patches_replace short-circuits them.
-  The **server slim-loads** (only the blocks it actually needs); the
-  **client doesn't yet**. Real engineering work to fix on the
-  client side, hasn't been a blocker for any real workflow yet.
+- **Changing `n_blocks_remote` requires reloading the model.** The
+  client slim-load strips the back-half block weights in place to free
+  VRAM (the whole point — the server already has those blocks, the
+  client doesn't need to hold them too). Because ComfyUI shares the
+  underlying `nn.Module` across cached references, the stripped weights
+  are gone for that session. If you change `n_blocks_remote` or remove
+  the Mesh Split FLUX node mid-session, force a model reload (the
+  "Free model and node cache" button in ComfyUI, or restart). The node
+  raises a clear error if you try to re-config without reloading.
 - **Sequential request/response.** No CUDA-stream overlap of codec
   work with compute. The FLUX sampler is inherently sequential per
   timestep, so this caps the headroom anyway.
@@ -261,8 +271,6 @@ What more support unlocks:
 - **Multi-LoRA server-side stacking** (multiple LoRA files + per-lora
   strengths in the GUI / launchers)
 - **Multi-client server mode** — rent your back-half GPU out
-- **Client-side slim load** — free the VRAM currently wasted on
-  unused back-half blocks held by the local model
 - **CUDA-stream overlap** — codec hides behind compute for genuine
   wall-clock parity with all-local
 - **Activation pre-stage cache** — skip re-shipping unchanged `pe` /

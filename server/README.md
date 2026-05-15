@@ -161,6 +161,13 @@ Opens a Tkinter window with:
 The GUI doesn't add server logic — it just spawns `mesh_server.py`
 with the right args. Same generations, friendlier launch.
 
+The device dropdown populates asynchronously. On Windows, `nvidia-smi`
+cold-start takes 1-3s (driver + NVML init); rather than block the window
+from painting, the GUI opens immediately with a `cuda:0` placeholder and
+fills in the real device list (with card names) once `nvidia-smi` returns.
+If you click the dropdown within that first second you'll see the
+placeholder; it refreshes shortly after.
+
 ### Option B: Headless launchers
 
 Each bat file has an editable line at the top:
@@ -268,11 +275,12 @@ Two important things to know about same-host setups:
    enough that codec encode/decode latency exceeds the bandwidth
    savings. Raw mode is the right choice here.
 
-2. **ComfyUI doesn't know about the split.** On the client side, it
-   loads the FULL FLUX model into the ComfyUI GPU's VRAM (~9.4 GB).
-   The back-half blocks then sit unused there because patches_replace
-   short-circuits them. The *server* slim-loads (small VRAM footprint);
-   the *client* doesn't. Future ComfyUI-side optimization.
+2. **Both sides slim-load.** The server slim-loads from disk; the
+   client strips the back-half block weights from its loaded model
+   in place (frees ~half the VRAM on `n_blocks_remote=4` of Klein 9B).
+   If you change `n_blocks_remote` after a generation, force-reload
+   the model on the client — the stripped weights are gone for the
+   session. The node raises if you try without reloading.
 
 ---
 
