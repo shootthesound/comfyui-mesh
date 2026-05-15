@@ -43,6 +43,17 @@ from tkinter.scrolledtext import ScrolledText
 HERE = Path(__file__).parent
 SETTINGS_FILE = HERE / "mesh_server_gui_settings.json"
 STARTUP_LOG = HERE / "mesh_server_gui_startup.log"
+READY_SENTINEL = HERE / "mesh_server_gui_ready.tmp"
+
+
+def _signal_ready() -> None:
+    """Drop the ready sentinel file the launcher splash polls for.
+    Called once the main Tk window is actually painted so the splash
+    closes the moment the user can interact."""
+    try:
+        READY_SENTINEL.write_text("ready", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _log_session_header() -> None:
@@ -212,6 +223,10 @@ class MeshServerGUI:
 
         self._build_ui()
         _log_event("_build_ui complete (window can paint)")
+        # Schedule the ready signal AFTER the first event-loop tick, so
+        # the splash only closes once the user can actually see + click
+        # the window — not just when our build code returned.
+        self.root.after(0, self._on_window_ready)
         # The startup safetensors-header read happens off-thread so even
         # a slow first read (cold cache on a multi-GB checkpoint) doesn't
         # delay the window paint.
@@ -330,6 +345,14 @@ class MeshServerGUI:
 
         # Hook file-change to update n_blocks_max
         self.weights_var.trace_add("write", lambda *_: self._refresh_after_file_change())
+
+    # ----- Window-ready handshake -----
+
+    def _on_window_ready(self):
+        """First event-loop tick after _build_ui returns. Signal the
+        launcher splash that the user can see the GUI now."""
+        _log_event("window painted, signalling splash to close")
+        _signal_ready()
 
     # ----- Settings persistence -----
 

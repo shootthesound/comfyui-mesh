@@ -29,6 +29,15 @@ REM ---- startup log. The marker is touched (created/updated) here;
 REM ---- mesh_server_gui.py reads its mtime in _log_session_header.
 echo. > "%~dp0mesh_server_gui_bat_t0.tmp"
 
+REM ---- Clear stale ready-sentinel so the splash actually waits ----
+del /f /q "%~dp0mesh_server_gui_ready.tmp" >nul 2>nul
+
+REM ---- Launch the cmd-console splash in parallel. It tells the user
+REM ---- something is happening during the 10-30s python.exe + venv +
+REM ---- tkinter cold start, and self-closes once mesh_server_gui.py
+REM ---- writes the ready sentinel.
+start "comfyui-mesh starting" "%~dp0_splash.cmd"
+
 REM ---- Launch the GUI (uses pythonw if available so no console window) ----
 set "VENV_PYW=%~dp0.venv\Scripts\pythonw.exe"
 if exist "%VENV_PYW%" (
