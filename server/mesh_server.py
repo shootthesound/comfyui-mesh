@@ -265,7 +265,89 @@ def load_flux2_klein(
     n_single = len(diffusion.single_blocks)
     print(f"[server] model loaded; double_blocks={n_double} single_blocks={n_single} "
           f"hidden_size={diffusion.hidden_size} global_modulation={diffusion.params.global_modulation}")
-    return diffusion
+
+    # Stash slim-load metadata on the patcher so the LoRA loader can
+    # remap key indices correctly without re-deriving them.
+    patcher._mesh_slim_meta = {
+        "drop_db": drop_db,
+        "n_single_remote": n_single_remote,
+        "total_db": total_db,
+        "total_sb": total_sb,
+    }
+    return patcher
+
+
+# ---------------------------------------------------------------------
+# LoRA application — server-side
+# ---------------------------------------------------------------------
+
+def apply_server_lora(patcher, lora_path: Path, strength: float) -> int:
+    """Load a LoRA from disk and apply it to the slim-loaded model.
+
+    LoRAs reference ORIGINAL block indices (e.g. `double_blocks.4` for
+    the 5th double_block). Our slim model has those weights remapped to
+    indices [0..n_loaded). To make ComfyUI's standard LoRA pipeline work,
+    we enhance the model's lora key_map with aliases: every entry that
+    references slim_idx K gets a parallel entry referencing original_idx
+    (K + drop_db) pointing at the same model parameter.
+
+    LoRA references to layers the server doesn't hold (front-half doubles,
+    tail singles, final_layer) silently fail to match and get dropped.
+
+    Returns the number of patches actually applied.
+    """
+    import re
+    import comfy.lora
+    import comfy.lora_convert
+    import comfy.utils
+
+    slim_meta = getattr(patcher, "_mesh_slim_meta", None)
+    if slim_meta is None:
+        raise RuntimeError("apply_server_lora: patcher has no slim-load metadata")
+    drop_db = slim_meta["drop_db"]
+
+    print(f"[server] loading LoRA: {lora_path} (strength={strength})")
+    lora_sd = comfy.utils.load_torch_file(str(lora_path), safe_load=True)
+    print(f"[server] LoRA has {len(lora_sd)} tensors")
+
+    # Build the slim model's natural key_map
+    key_map = comfy.lora.model_lora_keys_unet(patcher.model, {})
+
+    # Add aliases mapping ORIGINAL block indices to slim model targets.
+    # We look at every existing key_map entry, find the slim block index
+    # if any, and add a parallel entry for the original index.
+    pat_kohya = re.compile(r"(double_blocks_)(\d+)(_)")
+    pat_native = re.compile(r"(double_blocks\.)(\d+)(\.)")
+    new_aliases = {}
+    if drop_db > 0:
+        for lora_key, model_key in key_map.items():
+            for pat, sep in ((pat_kohya, "_"), (pat_native, ".")):
+                m = pat.search(lora_key)
+                if m:
+                    slim_idx = int(m.group(2))
+                    orig_idx = slim_idx + drop_db
+                    aliased = pat.sub(f"{m.group(1)}{orig_idx}{sep}", lora_key, count=1)
+                    new_aliases[aliased] = model_key
+                    break  # one pattern match per key
+    if new_aliases:
+        print(f"[server] added {len(new_aliases)} key-map aliases (orig idx -> slim idx, drop_db={drop_db})")
+        key_map.update(new_aliases)
+
+    # Run the standard ComfyUI conversion + matching pipeline
+    lora_sd = comfy.lora_convert.convert_lora(lora_sd)
+    loaded = comfy.lora.load_lora(lora_sd, key_map, log_missing=False)
+    print(f"[server] LoRA matched {len(loaded)} model parameters")
+
+    n_patches = patcher.add_patches(loaded, strength)
+    print(f"[server] add_patches accepted {len(n_patches)} patches")
+
+    # Force the LoRA to actually fold into the loaded weights now (slim-load
+    # is long-lived; we don't want the per-call patching ComfyUI normally
+    # does). load_models_gpu with force_full_load=True re-stages and applies.
+    import comfy.model_management
+    comfy.model_management.load_models_gpu([patcher], force_full_load=True)
+
+    return len(n_patches)
 
 
 # ---------------------------------------------------------------------
@@ -489,13 +571,25 @@ def main():
                         "N=32 -> all doubles + all singles (entire back-half). "
                         "MUST match the client node's `n_blocks_remote` setting. "
                         "If omitted, loads every block (full back-half).")
+    p.add_argument("--lora", type=Path, default=None,
+                   help="Path to a LoRA safetensors file to apply to the slim "
+                        "back-half model. References to layers the server doesn't "
+                        "hold (front-half doubles, tail singles, encoders, "
+                        "final_layer) are silently dropped.")
+    p.add_argument("--lora-strength", type=float, default=1.0,
+                   help="LoRA strength multiplier (default 1.0).")
     args = p.parse_args()
 
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
     device = torch.device(args.device)
 
-    model = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
-    serve(model, args.bind, args.port, device)
+    patcher = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
+    if args.lora is not None:
+        if not args.lora.is_file():
+            raise FileNotFoundError(f"LoRA file not found: {args.lora}")
+        apply_server_lora(patcher, args.lora, args.lora_strength)
+    diffusion = patcher.model.diffusion_model
+    serve(diffusion, args.bind, args.port, device)
 
 
 if __name__ == "__main__":

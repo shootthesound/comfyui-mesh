@@ -201,6 +201,26 @@ class MeshServerGUI:
         comfy_path = find_comfyui_path() or "(not found — set COMFYUI_PATH before launching)"
         Label(row, text=comfy_path, fg="#666", anchor="w").pack(side=LEFT, fill=X, expand=True)
 
+        # Row: optional LoRA file picker + strength
+        row = Frame(self.root)
+        row.pack(fill=X, **pad)
+        Label(row, text="LoRA:", width=12, anchor="w").pack(side=LEFT)
+        self.lora_var = StringVar(value="")
+        Entry(row, textvariable=self.lora_var).pack(side=LEFT, fill=X, expand=True, padx=4)
+        Button(row, text="Browse…", command=self._on_browse_lora).pack(side=LEFT)
+        Button(row, text="Clear", command=lambda: self.lora_var.set("")).pack(side=LEFT, padx=4)
+
+        row = Frame(self.root)
+        row.pack(fill=X, **pad)
+        Label(row, text="LoRA strength:", width=12, anchor="w").pack(side=LEFT)
+        self.lora_strength_var = StringVar(value="1.0")
+        ttk.Spinbox(
+            row, from_=-2.0, to=2.0, increment=0.1,
+            textvariable=self.lora_strength_var, width=8,
+        ).pack(side=LEFT)
+        Label(row, text="(only applies to layers this server holds — front-half + tail singles ignored)",
+              fg="#666", anchor="w").pack(side=LEFT, padx=8)
+
         # Row: start/stop + status
         row = Frame(self.root)
         row.pack(fill=X, padx=8, pady=10)
@@ -230,6 +250,22 @@ class MeshServerGUI:
         )
         if path:
             self.weights_var.set(path)
+
+    def _on_browse_lora(self):
+        # Prefer the user's typical loras folder if we can find one
+        lora_dirs = [
+            HERE / "loras",
+            Path("S:/Auto/ComfyUI_SEC/ComfyUI/models/loras"),
+            HERE,
+        ]
+        initial = next((str(p) for p in lora_dirs if p.is_dir()), str(HERE))
+        path = filedialog.askopenfilename(
+            title="Pick a LoRA safetensors file (optional — Cancel to skip)",
+            initialdir=initial,
+            filetypes=[("Safetensors", "*.safetensors"), ("All files", "*.*")],
+        )
+        if path:
+            self.lora_var.set(path)
 
     def _refresh_after_file_change(self):
         path = self.weights_var.get().strip()
@@ -293,6 +329,19 @@ class MeshServerGUI:
         ]
         if n_blocks > 0:
             cmd += ["--n-blocks", str(n_blocks)]
+
+        # Optional LoRA + strength
+        lora_path = self.lora_var.get().strip()
+        if lora_path:
+            if not Path(lora_path).is_file():
+                messagebox.showerror("comfyui-mesh", f"LoRA file not found:\n{lora_path}")
+                return
+            try:
+                lora_strength = float(self.lora_strength_var.get())
+            except ValueError:
+                messagebox.showerror("comfyui-mesh", "LoRA strength must be a number.")
+                return
+            cmd += ["--lora", lora_path, "--lora-strength", str(lora_strength)]
 
         self._append(f"\n[gui] launching: {' '.join(cmd)}\n")
         self._append(f"[gui] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', '(unset)')}\n\n")

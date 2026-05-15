@@ -62,7 +62,8 @@ def main():
 
     print(f"[smoke] loading model (slim, n_blocks={args.n_blocks})")
     t0 = time.time()
-    model = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
+    patcher = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
+    model = patcher.model.diffusion_model
     print(f"[smoke] model load: {time.time()-t0:.2f}s")
     H = model.params.hidden_size
 

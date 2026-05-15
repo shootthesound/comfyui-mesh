@@ -33,6 +33,12 @@ REM  Leave at 0 to load the full back-half model.
 REM ============================================================
 set N_BLOCKS=4
 
+REM ============================================================
+REM  Optional LoRA — leave LORA empty to skip.
+REM ============================================================
+set LORA=
+set LORA_STRENGTH=1.0
+
 REM Hide all CUDA devices so the server can't accidentally pick a GPU.
 set CUDA_VISIBLE_DEVICES=
 echo [run_server] CUDA hidden — running on CPU / system RAM
@@ -62,7 +68,7 @@ if exist "%VENV_PY%" (
     echo [run_server] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
-REM ---- 5. Translate N_BLOCKS (from the EDIT-ME line at the top) into the CLI arg ----
+REM ---- 5. Translate N_BLOCKS into CLI arg ----
 if "%N_BLOCKS%"=="0" (
     set "N_BLOCKS_ARG="
     echo [run_server] full load (N_BLOCKS=0)
@@ -71,5 +77,13 @@ if "%N_BLOCKS%"=="0" (
     echo [run_server] slim load: --n-blocks %N_BLOCKS%
 )
 
-REM ---- 6. Launch with --device cpu ----
-"%PY%" -u "%~dp0mesh_server.py" --weights "%WEIGHTS%" --port %PORT% --bind %BIND% --device cpu --dtype bfloat16 %N_BLOCKS_ARG%
+REM ---- 6. Translate LORA into CLI args (if set) ----
+if "%LORA%"=="" (
+    set "LORA_ARGS="
+) else (
+    set "LORA_ARGS=--lora "%LORA%" --lora-strength %LORA_STRENGTH%"
+    echo [run_server] applying LoRA: %LORA% strength=%LORA_STRENGTH%
+)
+
+REM ---- 7. Launch with --device cpu ----
+"%PY%" -u "%~dp0mesh_server.py" --weights "%WEIGHTS%" --port %PORT% --bind %BIND% --device cpu --dtype bfloat16 %N_BLOCKS_ARG% %LORA_ARGS%
