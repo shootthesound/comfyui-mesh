@@ -104,9 +104,14 @@ class WireTensor:
     n_codec_frames: int = 0
     h_padded: int = 0
     w_padded: int = 0
-    h_data: int = 0
-    w_data: int = 0
+    h_data: int = 0      # per-channel data height (before tiling)
+    w_data: int = 0      # per-channel data width  (before tiling)
     n_channels: int = 0
+    # Channel-tile dim. tile_dim=1 -> one channel per Y plane (legacy
+    # behaviour). tile_dim=4 -> 4x4 grid of channels in each Y plane,
+    # so 16 channels per plane and 48 per codec frame. Tiling reduces
+    # per-frame NVENC overhead — see README "frame-count reduction".
+    tile_dim: int = 1
     # Per-channel min/max for the uint8 quant step (lists of length n_channels).
     # Global-min/max quant is too coarse for ML activations — see codec_mode
     # discussion in the README; per-channel preserves ~bf16 precision per channel.
@@ -127,6 +132,7 @@ class WireTensor:
                 "h_data": self.h_data,
                 "w_data": self.w_data,
                 "n_channels": self.n_channels,
+                "tile_dim": self.tile_dim,
                 "var_mins": self.var_mins if self.var_mins is not None else [],
                 "var_maxs": self.var_maxs if self.var_maxs is not None else [],
             },
@@ -213,13 +219,31 @@ def encode_nvenc(
     tensor: torch.Tensor,
     qp: int = 18,
     lossless: bool = False,
+    tile_dim: int = 4,
 ) -> WireTensor:
     """Per-channel uint8 quantize + NVENC HEVC YUV444 round-trip.
 
     Tensor is expected shape [B, T, H] or [B, T1, T2, H] (FLUX-like).
     Internally flattens to [B*T_total, H] and treats H as the channel axis.
+
+    `tile_dim` controls channel tiling within each codec frame:
+      - tile_dim=1: one channel per Y plane, one frame per 3 channels
+                    (legacy; small frames; many of them)
+      - tile_dim=4: 4x4 grid of channels per Y plane, 16 channels per
+                    plane, 48 per codec frame. Cuts NVENC frame count
+                    by ~16x and eliminates the 144x144 minimum-frame
+                    padding overhead. Default.
+      - tile_dim=8: 8x8 grid, 64 channels per plane, 192 per frame.
+                    More aggressive; bigger frames; fewer of them.
+
+    Pixel correctness is preserved across any tile_dim — same total data
+    is encoded; we just rearrange spatially so NVENC sees fewer, larger
+    frames.
     """
     from nvenc_pframe.direct.backend import DirectBackend  # type: ignore
+
+    if tile_dim < 1:
+        raise ValueError(f"tile_dim must be >= 1, got {tile_dim}")
 
     orig_shape = tuple(tensor.shape)
     orig_dtype = tensor.dtype
@@ -231,8 +255,7 @@ def encode_nvenc(
     if pad > 0:
         flat = torch.cat([flat, flat[:1].expand(pad, -1)], dim=0)
 
-    # rearrange to [n_channels, h_data, w_data] then group every 3
-    # channels as a YUV444 frame
+    # rearrange to [n_channels, h_data, w_data]
     arr = flat.reshape(h_data, w_data, n_channels).permute(2, 0, 1).contiguous()  # [C, H, W]
 
     # Per-channel min/max -> uint8. Global min/max is far too lossy
@@ -256,34 +279,51 @@ def encode_nvenc(
     var_mins = mins.tolist()
     var_maxs = maxs.tolist()
 
-    # Group channels into triplets, pad spatial dims to NVENC alignment.
-    # u8 is [n_channels, h_data, w_data]. Reshape to [n_triplets, 3, h_data, w_data]
-    # then pad spatially. Single vectorised pass — earlier Python double-loop
-    # cost ~3x as long for the same outcome (4096 micro-tensor copies vs
-    # one big permute/reshape).
-    h_padded = _align_up(h_data)
-    w_padded = _align_up(w_data)
-    n_triplets = (n_channels + 2) // 3
-    pad_channels = n_triplets * 3 - n_channels
+    # ----- Channel tiling -----
+    # We pack tile_dim*tile_dim channels into each Y/U/V plane as a
+    # spatial grid, so each codec frame carries 3*tile_dim^2 channels.
+    # Pad the channel count so it's an exact multiple of that group size.
+    chans_per_plane = tile_dim * tile_dim
+    chans_per_frame = 3 * chans_per_plane
+    n_codec_frames = (n_channels + chans_per_frame - 1) // chans_per_frame
+    target_channels = n_codec_frames * chans_per_frame
+    pad_channels = target_channels - n_channels
     if pad_channels > 0:
-        # Replicate last real channel into the tail slots for cleaner
-        # codec behaviour (vs zero pad which is a hard edge in the bitstream).
+        # Replicate last real channel into the tail slots — cleaner for
+        # codec efficiency than zero pad.
         u8_padded = torch.cat(
             [u8, u8[-1:].expand(pad_channels, h_data, w_data)],
             dim=0,
         )
     else:
         u8_padded = u8
-    # [n_triplets*3, h_data, w_data] -> [n_triplets, 3, h_data, w_data]
-    yuv_data = u8_padded.reshape(n_triplets, 3, h_data, w_data)
-    if h_padded == h_data and w_padded == w_data:
-        yuv = yuv_data.contiguous()
+
+    # u8_padded shape: [target_channels, h_data, w_data]
+    # Reshape into the (frames, planes, tile_row, tile_col, h, w) view,
+    # then permute to interleave tile_row with h and tile_col with w,
+    # then collapse to a flat 2D plane.
+    tiled = u8_padded.reshape(
+        n_codec_frames, 3, tile_dim, tile_dim, h_data, w_data
+    )
+    # [N, 3, tr, tc, h, w] -> [N, 3, tr, h, tc, w]
+    tiled = tiled.permute(0, 1, 2, 4, 3, 5).contiguous()
+    tile_h = tile_dim * h_data
+    tile_w = tile_dim * w_data
+    yuv_data = tiled.reshape(n_codec_frames, 3, tile_h, tile_w)
+
+    # Pad spatially up to NVENC alignment + min-dim. With tile_dim>=2
+    # the tile is already past 144 in most realistic cases, so this
+    # is usually a no-op.
+    h_padded = _align_up(tile_h)
+    w_padded = _align_up(tile_w)
+    if h_padded == tile_h and w_padded == tile_w:
+        yuv = yuv_data
     else:
         yuv = torch.zeros(
-            (n_triplets, 3, h_padded, w_padded),
+            (n_codec_frames, 3, h_padded, w_padded),
             dtype=torch.uint8, device=tensor.device,
         )
-        yuv[:, :, :h_data, :w_data] = yuv_data
+        yuv[:, :, :tile_h, :tile_w] = yuv_data
 
     backend = _get_or_create_backend(h_padded, w_padded, qp=qp, lossless=lossless)
     packets = backend.encode_tensor_frames(yuv)
@@ -295,12 +335,13 @@ def encode_nvenc(
         bytes_payload=codec_bytes,
         dtype_str=str(orig_dtype),
         shape=orig_shape,
-        n_codec_frames=n_triplets,
+        n_codec_frames=n_codec_frames,
         h_padded=h_padded,
         w_padded=w_padded,
         h_data=h_data,
         w_data=w_data,
         n_channels=n_channels,
+        tile_dim=tile_dim,
         var_mins=var_mins,
         var_maxs=var_maxs,
     )
@@ -317,6 +358,7 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
     h_data = int(extra["h_data"])
     w_data = int(extra["w_data"])
     n_channels = int(extra["n_channels"])
+    tile_dim = int(extra.get("tile_dim", 1))  # legacy frames default to 1
     var_mins = extra.get("var_mins", [])
     var_maxs = extra.get("var_maxs", [])
     if not var_mins or not var_maxs or len(var_mins) != n_channels:
@@ -326,6 +368,8 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
             f"This codec.py requires the per-channel quant scheme; both ends must "
             f"be running the same version."
         )
+    if tile_dim < 1:
+        raise ValueError(f"tile_dim must be >= 1, got {tile_dim}")
 
     backend = _get_decode_backend(h_padded, w_padded)
     # decode_frames_cuda expects a list of bytes packets — but we
@@ -334,12 +378,18 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
     decoded_t = backend.decode_frames_cuda([payload], n_frames)
 
     yuv = decoded_t.to(device=device)  # [n_frames, 3, h_padded, w_padded] uint8
-    # Crop spatial padding + flatten triplets back into channels in one
-    # vectorised pass. The previous Python double-loop did n_frames*3 (~4096
-    # for FLUX) micro-copies at ~80us each = ~330ms of pure launch overhead.
-    yuv_cropped = yuv[:, :, :h_data, :w_data]                             # [n_frames, 3, h_data, w_data]
-    flat = yuv_cropped.reshape(n_frames * 3, h_data, w_data)              # [n_frames*3, h_data, w_data]
-    out_channels = flat[:n_channels].contiguous()                         # [n_channels, h_data, w_data]
+
+    # Crop spatial padding to the tile size, then untile back to per-
+    # channel slices. Inverse of the encode-side reshape+permute.
+    tile_h = tile_dim * h_data
+    tile_w = tile_dim * w_data
+    yuv_cropped = yuv[:, :, :tile_h, :tile_w]                                  # [N, 3, tile_h, tile_w]
+    untiled = yuv_cropped.reshape(n_frames, 3, tile_dim, h_data, tile_dim, w_data)
+    # Inverse of permute(0, 1, 2, 4, 3, 5) is the same permutation
+    # (it swaps dims (3,4))
+    untiled = untiled.permute(0, 1, 2, 4, 3, 5).contiguous()                   # [N, 3, tr, tc, h, w]
+    flat = untiled.reshape(n_frames * 3 * tile_dim * tile_dim, h_data, w_data)
+    out_channels = flat[:n_channels].contiguous()                              # [n_channels, h_data, w_data]
 
     # Per-channel dequant. mins/maxs are float32 lists shipped in the header.
     mins_t = torch.tensor(var_mins, dtype=torch.float32, device=device).view(-1, 1, 1)
@@ -361,11 +411,11 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
     return flat.reshape(tuple(wire["shape"])).to(dtype=target_dtype)
 
 
-def encode(name: str, tensor: torch.Tensor, mode: str, qp: int = 18, lossless: bool = False) -> WireTensor:
+def encode(name: str, tensor: torch.Tensor, mode: str, qp: int = 18, lossless: bool = False, tile_dim: int = 4) -> WireTensor:
     if mode == "raw":
         return encode_raw(name, tensor)
     elif mode == "nvenc":
-        return encode_nvenc(name, tensor, qp=qp, lossless=lossless)
+        return encode_nvenc(name, tensor, qp=qp, lossless=lossless, tile_dim=tile_dim)
     else:
         raise ValueError(f"unknown codec mode {mode!r}")
 

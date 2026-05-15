@@ -376,8 +376,8 @@ def _decode_request_tensors(header: dict, blobs: list[bytes], device: torch.devi
     return img, txt, vec, vec_orig, pe, attn_mask
 
 
-def _encode_response_tensors(img: torch.Tensor, txt: torch.Tensor, codec_mode: str, codec_qp: int, codec_lossless: bool):
-    img_w = codec.encode("img", img, mode=codec_mode, qp=codec_qp, lossless=codec_lossless)
+def _encode_response_tensors(img: torch.Tensor, txt: torch.Tensor, codec_mode: str, codec_qp: int, codec_lossless: bool, codec_tile_dim: int = 4):
+    img_w = codec.encode("img", img, mode=codec_mode, qp=codec_qp, lossless=codec_lossless, tile_dim=codec_tile_dim)
     txt_w = codec.encode_raw("txt", txt)
     return [img_w, txt_w]
 
@@ -430,20 +430,20 @@ def serve(model, host: str, port: int, device: torch.device):
                     )
                     t_forward = time.time() - t0
 
-                    # Echo the same codec mode that came in for the img tensor
+                    # Echo the same codec mode + tile_dim that came in for
+                    # the img tensor. tile_dim lives in the wire's `extra`
+                    # dict; QP isn't transmitted so it defaults to 18.
                     img_in_wire = next(t for t in header["tensors"] if t["name"] == "img")
                     codec_mode = img_in_wire["encoding"]
                     codec_qp = 18
                     codec_lossless = False
-                    # Re-derive from extra if available
-                    if codec_mode == "nvenc":
-                        # Match the request's QP heuristic — server doesn't get told,
-                        # so default to qp18 unless caller wants otherwise (a future
-                        # protocol extension)
-                        pass
+                    codec_tile_dim = int(img_in_wire.get("extra", {}).get("tile_dim", 4))
 
                     t0 = time.time()
-                    wire_outs = _encode_response_tensors(img_out, txt_out, codec_mode, codec_qp, codec_lossless)
+                    wire_outs = _encode_response_tensors(
+                        img_out, txt_out,
+                        codec_mode, codec_qp, codec_lossless, codec_tile_dim,
+                    )
                     t_encode = time.time() - t0
 
                     resp_header = {

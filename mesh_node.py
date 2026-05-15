@@ -109,6 +109,7 @@ class MeshClient:
         codec_mode: str,
         codec_qp: int,
         codec_lossless: bool,
+        codec_tile_dim: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Send the back-half-double-blocks request and receive the
         post-double-block (img, txt) state."""
@@ -121,7 +122,7 @@ class MeshClient:
         wire_tensors = []
         blobs = []
 
-        img_w = codec.encode("img", img, mode=codec_mode, qp=codec_qp, lossless=codec_lossless)
+        img_w = codec.encode("img", img, mode=codec_mode, qp=codec_qp, lossless=codec_lossless, tile_dim=codec_tile_dim)
         wire_tensors.append(img_w.to_header())
         blobs.append(img_w.bytes_payload)
 
@@ -216,6 +217,7 @@ def _make_block_replacement(
     codec_mode: str,
     codec_qp: int,
     codec_lossless: bool,
+    codec_tile_dim: int,
     vec_orig_capture: dict,
 ):
     """Return a callable that ComfyUI's patches_replace will invoke at
@@ -247,6 +249,7 @@ def _make_block_replacement(
             codec_mode=codec_mode,
             codec_qp=codec_qp,
             codec_lossless=codec_lossless,
+            codec_tile_dim=codec_tile_dim,
         )
         return {"img": new_img, "txt": new_txt}
 
@@ -330,6 +333,14 @@ class MeshSplitFlux:
                                      "tooltip": "Lower = higher quality / less compression. 10=near-lossless, 18=standard, 28=high-compression (FLUX absorbs it fine; only a slight softness vs QP=18)."}),
                 "codec_lossless": ("BOOLEAN", {"default": False,
                                                "tooltip": "Use NVENC's lossless tuning (overrides QP, much larger bitstream)."}),
+                "codec_tile_dim": ([1, 2, 4, 8], {"default": 4,
+                                                   "tooltip": (
+                                                       "How many channels to tile per Y/U/V plane in each NVENC frame. "
+                                                       "Bigger tiles = fewer larger codec frames per encode = much "
+                                                       "faster wall clock. 1=legacy (~600ms/round-trip), "
+                                                       "4=default (~130ms), 8=most aggressive (~110ms). Compression "
+                                                       "ratio is essentially unchanged across values."
+                                                   )}),
             }
         }
 
@@ -338,7 +349,7 @@ class MeshSplitFlux:
     CATEGORY = "mesh"
     OUTPUT_NODE = False
 
-    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless):
+    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim):
         # Reach into the diffusion model to learn block counts
         diffusion = model.model.diffusion_model
         n_double_blocks = len(diffusion.double_blocks)
@@ -384,7 +395,7 @@ class MeshSplitFlux:
         if n_blocks_remote > 0:
             replace_at_split = _make_block_replacement(
                 client, split_index, n_double_blocks,
-                codec_mode, codec_qp, codec_lossless,
+                codec_mode, codec_qp, codec_lossless, codec_tile_dim,
                 vec_orig_capture,
             )
             double_pass = _make_double_passthrough()
@@ -410,6 +421,7 @@ class MeshSplitFlux:
         # n_blocks_remote == 0: no patches; entire model runs locally
 
         _LAST_STATS["codec_mode"] = codec_mode
+        _LAST_STATS["codec_tile_dim"] = codec_tile_dim
         _LAST_STATS["n_blocks_remote"] = n_blocks_remote
         _LAST_STATS["n_double_remote"] = n_double_remote
         _LAST_STATS["n_single_remote"] = n_single_remote
@@ -424,7 +436,7 @@ class MeshSplitFlux:
               f"{n_single_remote}/{n_single_blocks} singles "
               f"(double_block intercept at index {split_index}); "
               f"server={remote_host}:{remote_port}; "
-              f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless}")
+              f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless} tile_dim={codec_tile_dim}")
 
         return (m,)
 
