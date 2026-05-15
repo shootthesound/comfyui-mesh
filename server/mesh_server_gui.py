@@ -51,12 +51,32 @@ def _log_session_header() -> None:
     is kept on disk."""
     try:
         import platform
+        # The launcher .bat drops a marker file just before invoking
+        # pythonw. Comparing its mtime to wall-clock now tells us how
+        # long python.exe spawn + venv site init + module imports took
+        # — i.e. everything BEFORE _GUI_LAUNCH_T0 was captured. This is
+        # where 10-40s startup lag typically lives (Defender scan +
+        # tkinter DLL load + cold venv).
+        bat_marker = HERE / "mesh_server_gui_bat_t0.tmp"
+        bat_to_py_line = ""
+        if bat_marker.exists():
+            try:
+                delta = _time.time() - bat_marker.stat().st_mtime
+                bat_to_py_line = (
+                    f"bat→python : {delta:6.2f}s  "
+                    f"(python.exe spawn + venv site init + module imports; "
+                    f"NOT script work)\n"
+                )
+            except Exception:
+                pass
         with STARTUP_LOG.open("w", encoding="utf-8") as f:
             f.write("=== mesh_server_gui startup log ===\n")
             f.write(f"local time : {_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"python     : {sys.executable}\n")
             f.write(f"version    : {sys.version.split()[0]}\n")
             f.write(f"platform   : {platform.platform()}\n")
+            if bat_to_py_line:
+                f.write(bat_to_py_line)
             f.write("---\n")
     except Exception:
         pass

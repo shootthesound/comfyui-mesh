@@ -23,6 +23,12 @@ if exist "%VENV_PY%" (
     echo [run_server_gui] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
+REM ---- Drop a marker file just before launching python so the GUI
+REM ---- can compute "bat -> python ready" wall-clock delta in its
+REM ---- startup log. The marker is touched (created/updated) here;
+REM ---- mesh_server_gui.py reads its mtime in _log_session_header.
+echo. > "%~dp0mesh_server_gui_bat_t0.tmp"
+
 REM ---- Launch the GUI (uses pythonw if available so no console window) ----
 set "VENV_PYW=%~dp0.venv\Scripts\pythonw.exe"
 if exist "%VENV_PYW%" (
