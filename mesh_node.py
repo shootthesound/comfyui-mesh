@@ -62,6 +62,35 @@ class MeshReconnect(Exception):
     pass
 
 
+class MeshDecreaseNeedsReload(Exception):
+    """Raised when the user decreases n_blocks_remote mid-session — the
+    stripped weights are gone and we can't un-strip. configure() catches
+    this, surfaces a user-friendly message in the node UI via websocket,
+    then re-raises so ComfyUI flags the node."""
+    pass
+
+
+def _send_node_message(node_id, level: str, text: str) -> None:
+    """Send a `mesh-message` websocket event to ComfyUI's web UI. The
+    bundled `web/mesh.js` extension picks it up and renders a banner
+    below the matching node. Stays as a fire-and-forget — if anything
+    in the dispatch path is broken, log and continue."""
+    if not node_id:
+        return
+    try:
+        import server as _comfy_server
+        inst = getattr(_comfy_server.PromptServer, "instance", None)
+        if inst is None:
+            return
+        inst.send_sync("mesh-message", {
+            "node_id": str(node_id),
+            "level": level,
+            "text": text,
+        })
+    except Exception as e:
+        print(f"[mesh] could not send node-message ({e})")
+
+
 _LAST_STATS: dict = {
     "wire_call_count": 0,
     "bytes_sent": 0,
@@ -418,43 +447,6 @@ def _install_vec_orig_hook(diffusion_model, capture_dict):
     mod._mesh_vec_orig_hook = mod.register_forward_pre_hook(hook)
 
 
-def _trigger_comfy_free_cache() -> bool:
-    """Hit ComfyUI's /free endpoint — same effect as clicking
-    'Free model and node cache' in the UI. Sets the unload_models +
-    free_memory flags on the prompt queue, which evicts the cached
-    MODEL output so the next queued prompt re-executes UNETLoader
-    from disk.
-
-    Returns True on success. On any failure, returns False so the
-    caller can fall back to telling the user to click the button."""
-    try:
-        import json as _json
-        import urllib.request
-
-        port = 8188
-        try:
-            import server as _comfy_server
-            inst = getattr(_comfy_server.PromptServer, "instance", None)
-            if inst is not None:
-                port = int(getattr(inst, "port", 8188) or 8188)
-        except Exception:
-            pass
-
-        body = _json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8")
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/free",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            resp.read()
-        return True
-    except Exception as e:
-        print(f"[mesh] auto-free via /free endpoint failed ({e})")
-        return False
-
-
 def _capture_block_param_signature(block: nn.Module) -> dict:
     """Snapshot {leaf_name: (shape, dtype)} for every parameter and
     buffer in a block. Used at strip time so the stub can reproduce
@@ -561,25 +553,12 @@ def _strip_diffusion_back_half(
             return 0  # already stripped for this exact config
         if prior_db > n_double_remote or prior_sb > n_single_remote:
             # Decrease — would need to un-strip, but those weights are gone.
-            # Auto-trigger ComfyUI's "Free model and node cache" so the
-            # next re-queue runs UNETLoader fresh and produces an
-            # unstripped MODEL.
-            freed = _trigger_comfy_free_cache()
-            if freed:
-                raise RuntimeError(
-                    f"Decrease detected (was {prior_db} doubles + {prior_sb} singles, "
-                    f"now {n_double_remote} + {n_single_remote}). Already-stripped "
-                    "weights are gone, so ComfyUI's model cache has been cleared "
-                    "automatically. **Re-queue your workflow** to reload the model "
-                    "fresh and apply the new n_blocks_remote."
-                )
-            raise RuntimeError(
-                f"Mesh-stripped at ({prior_db} doubles, {prior_sb} singles); "
-                f"can't decrease to ({n_double_remote}, {n_single_remote}) — "
-                "the stripped weights are gone, and the auto-cache-clear via "
-                "ComfyUI's /free endpoint failed. Click 'Free model and node "
-                "cache' in the ComfyUI menu, then re-queue. "
-                "(Increasing n_blocks_remote works without any reload.)"
+            raise MeshDecreaseNeedsReload(
+                f"Decreased n_blocks_remote ({prior_db}→{n_double_remote} doubles, "
+                f"{prior_sb}→{n_single_remote} singles). The stripped weights are "
+                "gone for this session.\n\n"
+                "Please restart ComfyUI to reload the model from disk. "
+                "(Increasing n_blocks_remote works without restart.)"
             )
         # Increase on at least one axis. Strip only the NEWLY-back-half blocks.
         # Doubles: new range extends the strip earlier in the stack.
@@ -700,7 +679,15 @@ class MeshSplitFlux:
                                                            "Workflow ordering matters: LoraLoader must come BEFORE "
                                                            "MeshSplit FLUX in the graph for this to see them."
                                                        )}),
-            }
+            },
+            "hidden": {
+                # ComfyUI passes the runtime node id here; we use it to
+                # send a `mesh-message` websocket event back to the JS
+                # extension so it can render an inline banner under
+                # this specific node (e.g. "restart ComfyUI" on a
+                # decrease).
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
     RETURN_TYPES = ("MODEL",)
@@ -708,7 +695,7 @@ class MeshSplitFlux:
     CATEGORY = "mesh"
     OUTPUT_NODE = False
 
-    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim, forward_client_loras):
+    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim, forward_client_loras, unique_id=None):
         # Reach into the diffusion model to learn block counts
         diffusion = model.model.diffusion_model
         n_double_blocks = len(diffusion.double_blocks)
@@ -754,7 +741,16 @@ class MeshSplitFlux:
         # original weights are gone). _strip_diffusion_back_half is
         # idempotent for identical configs and raises clearly otherwise.
         if n_blocks_remote > 0:
-            stripped = _strip_diffusion_back_half(diffusion, n_double_remote, n_single_remote)
+            try:
+                stripped = _strip_diffusion_back_half(diffusion, n_double_remote, n_single_remote)
+            except MeshDecreaseNeedsReload as e:
+                # Surface the decrease-needs-restart message inline on
+                # the node so the user sees it without scrolling the
+                # console. Then re-raise so ComfyUI flags this run.
+                _send_node_message(unique_id, "warn", str(e))
+                raise
+            # Clear any prior banner from this node — strip succeeded.
+            _send_node_message(unique_id, "clear", "")
             if stripped:
                 print(f"[mesh] stripped {n_double_remote} double_blocks + "
                       f"{n_single_remote} single_blocks from client VRAM")

@@ -334,7 +334,13 @@ class MeshServerGUI:
         # Row: start/stop + status
         row = Frame(self.root)
         row.pack(fill=X, padx=8, pady=10)
-        self.start_btn = Button(row, text="Start Server", command=self._on_start, width=16)
+        # Start/Restart button — width is adjusted at state-flip time
+        # so the longer "Restart server to apply new settings" text
+        # fits readably without permanently bloating the idle button.
+        self.start_btn = Button(
+            row, text="Start Server", command=self._on_start,
+            width=16, font=("Segoe UI", 9),
+        )
         self.start_btn.pack(side=LEFT)
         self.stop_btn = Button(row, text="Stop", command=self._on_stop, width=8, state=DISABLED)
         self.stop_btn.pack(side=LEFT, padx=4)
@@ -397,7 +403,9 @@ class MeshServerGUI:
     def _update_start_button_state(self):
         """Flip the Start button between three states based on subprocess
         + form state: idle (Start, enabled), running with no drift
-        (Start, disabled), running with form drift (Restart, enabled)."""
+        (Start, disabled), running with form drift (Restart, enabled).
+        Width / font flip with state so the long Restart text stays
+        readable without bloating the idle button."""
         if self.proc is None:
             # Idle state is handled by _on_server_exit; nothing to do here.
             return
@@ -409,12 +417,16 @@ class MeshServerGUI:
                 text="Restart server to apply new settings",
                 state=NORMAL,
                 command=self._on_restart,
+                width=38,
+                font=("Segoe UI", 10, "bold"),
             )
         else:
             self.start_btn.config(
                 text="Start Server",
                 state=DISABLED,
                 command=self._on_start,
+                width=16,
+                font=("Segoe UI", 9),
             )
 
     def _on_restart(self):
@@ -584,7 +596,10 @@ class MeshServerGUI:
         # Snapshot the form values that drove this launch so future
         # edits can be detected as drift.
         self._running_baseline = self._capture_settings()
-        self.start_btn.config(text="Start Server", state=DISABLED, command=self._on_start)
+        self.start_btn.config(
+            text="Start Server", state=DISABLED, command=self._on_start,
+            width=16, font=("Segoe UI", 9),
+        )
         self.stop_btn.config(state=NORMAL)
         self.status_label.config(text=f"running (pid {self.proc.pid})", fg="#080")
 
@@ -611,7 +626,10 @@ class MeshServerGUI:
     def _on_server_exit(self):
         self.proc = None
         self._running_baseline = None
-        self.start_btn.config(text="Start Server", state=NORMAL, command=self._on_start)
+        self.start_btn.config(
+            text="Start Server", state=NORMAL, command=self._on_start,
+            width=16, font=("Segoe UI", 9),
+        )
         self.stop_btn.config(state=DISABLED)
         self.status_label.config(text="idle", fg="#666")
 
@@ -627,10 +645,18 @@ class MeshServerGUI:
             while True:
                 line = self.output_q.get_nowait()
                 if line is None:
-                    if self.proc is not None:
-                        rc = self.proc.poll()
-                        self._append(f"\n[gui] server exited (rc={rc})\n")
-                    self._on_server_exit()
+                    # The None sentinel may belong to a PREVIOUSLY-active
+                    # reader thread (e.g. just hit Restart, the old
+                    # subprocess's reader is finishing up, but self.proc
+                    # is already the new live process). Only treat the
+                    # None as an exit if the CURRENT proc has actually
+                    # died — otherwise it's a stale leftover and would
+                    # incorrectly grey out the Stop button.
+                    if self.proc is None or self.proc.poll() is not None:
+                        if self.proc is not None:
+                            rc = self.proc.poll()
+                            self._append(f"\n[gui] server exited (rc={rc})\n")
+                        self._on_server_exit()
                 else:
                     self._append(line)
         except queue.Empty:
