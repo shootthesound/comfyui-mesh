@@ -604,6 +604,14 @@ function createMeshButton(node, role, label, onClick) {
 // what order we call them in.
 // =====================================================================
 
+// Pill widget chrome (label + value + chevrons + ON/OFF chip) needs
+// breathing room. Anything narrower clips the labels or overflows the
+// node bounds. Enforced as both:
+//   1. New-node default width (in setupMeshSplitFlux)
+//   2. Hard minimum on the node prototype's computeSize (so loaded
+//      workflows that saved a narrower size get bumped up too)
+const MESH_NODE_MIN_W = 380;
+
 function setupMeshSplitFlux(node) {
     createPillNumber(node, "n_blocks_remote", { label: "n_blocks_remote", integer: true });
     createPillString(node, "remote_host", { label: "remote_host" });
@@ -614,12 +622,11 @@ function setupMeshSplitFlux(node) {
     createPillCombo(node,  "codec_tile_dim",{ label: "codec_tile_dim" });
     createPillBool(node,   "forward_client_loras", { label: "forward_client_loras" });
 
-    // Wider default for new nodes — the labels + pill chrome don't
-    // breathe at stock width. Saved workflows restore their stored
-    // size after onNodeCreated returns, so this only affects
-    // newly-dropped nodes.
+    // Default width for freshly-dropped nodes. computeSize() (overridden
+    // below in beforeRegisterNodeDef) already enforces MESH_NODE_MIN_W
+    // as a floor, so the Math.max here is belt-and-braces.
     const natural = node.computeSize();
-    node.setSize([Math.max(natural[0], 320), natural[1]]);
+    node.setSize([Math.max(natural[0], MESH_NODE_MIN_W), natural[1]]);
 }
 
 // =====================================================================
@@ -678,6 +685,32 @@ app.registerExtension({
                 setupMeshSplitFlux(this);
             } catch (e) {
                 console.warn("[mesh] pill setup failed; falling back to framework widgets", e);
+            }
+            return result;
+        };
+
+        // Enforce minimum width as a floor on computeSize. LiteGraph
+        // calls this any time it needs to know the natural/minimum size
+        // (initial layout, widget add/remove, restoring from saved
+        // workflows). Returning a width of MESH_NODE_MIN_W means the
+        // node never settles narrower than what the pill chrome needs,
+        // even if a previously-saved workflow stored a smaller size.
+        const orig_computeSize = nodeType.prototype.computeSize;
+        nodeType.prototype.computeSize = function () {
+            const sz = orig_computeSize ? orig_computeSize.apply(this, arguments) : [200, 80];
+            return [Math.max(sz[0], MESH_NODE_MIN_W), sz[1]];
+        };
+
+        // Workflow-load path: ComfyUI restores node.size from the saved
+        // JSON AFTER onNodeCreated. If the saved size predates pill
+        // widgets (or the user manually shrank the node), the restored
+        // width can leave the pills clipped. Bump up to the minimum
+        // here so loaded workflows look right too.
+        const orig_onConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            const result = orig_onConfigure?.apply(this, arguments);
+            if (this.size && this.size[0] < MESH_NODE_MIN_W) {
+                this.setSize([MESH_NODE_MIN_W, this.size[1]]);
             }
             return result;
         };
