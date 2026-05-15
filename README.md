@@ -196,14 +196,6 @@ LoraLoader) and the sampler. Its parameters:
 | `codec_tile_dim` | `4` | Channels-per-frame tile size. Higher = fewer larger NVENC frames = ~5× faster. 4 is a strong default. |
 | `forward_client_loras` | ON | Ship client-side LoraLoader patches to server so the LoRA effect covers back-half blocks too |
 
-### `Mesh Status`
-
-Pure-output node. Reports per-generation stats (bytes sent / received,
-last-call latency, codec ratio). Drop anywhere in the graph and watch
-the ComfyUI console. (Most live state — connection, pending changes,
-errors — now surfaces directly on the `Mesh Split FLUX` node itself,
-see "Live UX" below.)
-
 ---
 
 ## Live UX on the node
@@ -326,7 +318,7 @@ comfyui-mesh/
 ├── README.md                     ← this file
 ├── requirements.txt              ← ComfyUI auto-installs (cuda-bindings)
 ├── __init__.py                   ← ComfyUI node registration + WEB_DIRECTORY
-├── mesh_node.py                  ← MeshSplitFlux + MeshStatus + HTTP routes
+├── mesh_node.py                  ← MeshSplitFlux + /mesh/status + /mesh/reconfigure HTTP routes
 ├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
 ├── protocol.py                   ← length-prefixed TCP framing
 ├── vec_io.py                     ← FLUX.2 vec/modulation tuple (de)serializer

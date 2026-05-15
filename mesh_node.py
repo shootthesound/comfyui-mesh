@@ -23,12 +23,12 @@ mechanism — we register a per-block override callback that, instead of
 running the local copy of the block, packages the activations and
 sends them to the remote server.
 
-Two registered nodes:
+Single registered node:
     - MeshSplitFlux:  pass-through MODEL node, configures split point +
                       remote address + codec mode. Sets up the per-block
-                      patches.
-    - MeshStatus:     pure-info node that reports last-call wire stats
-                      (bytes sent, bytes received, codec ratio).
+                      patches. Live status (connection, wire stats,
+                      pending changes) surfaces inline on the node via
+                      web/mesh.js — no separate status node needed.
 """
 
 from __future__ import annotations
@@ -180,20 +180,6 @@ def _send_node_message(node_id, level: str, text: str) -> None:
         })
     except Exception as e:
         print(f"[mesh] could not send node-message ({e})")
-
-
-_LAST_STATS: dict = {
-    "wire_call_count": 0,
-    "bytes_sent": 0,
-    "bytes_received": 0,
-    "last_call_seconds": 0.0,
-    "codec_mode": "n/a",
-    "n_blocks_remote": 0,
-    "n_double_remote": 0,
-    "n_single_remote": 0,
-    "split_index": -1,
-    "blocks_offloaded": 0,
-}
 
 
 class MeshClient:
@@ -395,13 +381,6 @@ class MeshClient:
             raise RuntimeError(f"response missing img/txt; got {len(wires)} tensors")
         img_back = codec.decode(wires[0], resp_blobs[0], device=device)
         txt_back = codec.decode(wires[1], resp_blobs[1], device=device)
-
-        bytes_received = sum(len(b) for b in resp_blobs)
-
-        _LAST_STATS["wire_call_count"] += 1
-        _LAST_STATS["bytes_sent"] += bytes_sent
-        _LAST_STATS["bytes_received"] += bytes_received
-        _LAST_STATS["last_call_seconds"] = elapsed
 
         return img_back, txt_back
 
@@ -975,18 +954,6 @@ class MeshSplitFlux:
                 m.set_model_patch_replace(single_pass, "dit", "single_block", i)
         # n_blocks_remote == 0: no patches; entire model runs locally
 
-        _LAST_STATS["codec_mode"] = codec_mode
-        _LAST_STATS["codec_tile_dim"] = codec_tile_dim
-        _LAST_STATS["n_blocks_remote"] = n_blocks_remote
-        _LAST_STATS["n_double_remote"] = n_double_remote
-        _LAST_STATS["n_single_remote"] = n_single_remote
-        _LAST_STATS["split_index"] = split_index
-        _LAST_STATS["blocks_offloaded"] = n_blocks_remote
-        _LAST_STATS["wire_call_count"] = 0
-        _LAST_STATS["bytes_sent"] = 0
-        _LAST_STATS["bytes_received"] = 0
-        _LAST_STATS["last_call_seconds"] = 0.0
-
         print(f"[mesh] offloading {n_double_remote}/{n_double_blocks} doubles + "
               f"{n_single_remote}/{n_single_blocks} singles "
               f"(double_block intercept at index {split_index}); "
@@ -996,44 +963,10 @@ class MeshSplitFlux:
         return (m,)
 
 
-class MeshStatus:
-    """Reports stats from the most recent set of wire calls."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {}}
-
-    RETURN_TYPES = ("STRING",)
-    FUNCTION = "report"
-    CATEGORY = "mesh"
-    OUTPUT_NODE = True
-
-    def report(self):
-        s = _LAST_STATS
-        ratio = (s["bytes_sent"] / max(1, s["bytes_received"]))
-        n_double = s.get("n_double_remote", s.get("blocks_offloaded", 0))
-        n_single = s.get("n_single_remote", 0)
-        msg = (
-            f"n_blocks_remote={s.get('n_blocks_remote', s['blocks_offloaded'])}  "
-            f"({n_double} doubles + {n_single} singles, "
-            f"double_block intercept at index {s['split_index']})\n"
-            f"codec_mode={s['codec_mode']}\n"
-            f"wire_calls={s['wire_call_count']}  "
-            f"bytes_sent={s['bytes_sent']/1024/1024:.2f} MB  "
-            f"bytes_received={s['bytes_received']/1024/1024:.2f} MB  "
-            f"last_call={s['last_call_seconds']*1000:.1f} ms\n"
-            f"send/recv ratio={ratio:.2f}x"
-        )
-        print(f"[mesh status] {msg}")
-        return (msg,)
-
-
 NODE_CLASS_MAPPINGS = {
     "MeshSplitFlux": MeshSplitFlux,
-    "MeshStatus": MeshStatus,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MeshSplitFlux": "Mesh Split FLUX",
-    "MeshStatus": "Mesh Status",
 }
