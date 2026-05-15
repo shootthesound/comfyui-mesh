@@ -596,6 +596,20 @@ def serve(patcher, host: str, port: int, device: torch.device,
                     new_n_blocks = int(header.get("n_blocks", n_total_loaded))
                     print(f"[server] RESTARTING: reconfigure request "
                           f"--n-blocks {n_total_loaded} -> {new_n_blocks}")
+                    if new_n_blocks < n_total_loaded:
+                        # Heads-up for the user: server-side reconfigure
+                        # works either direction, but the CLIENT's
+                        # in-place strip is one-way for the session.
+                        # Decreasing n_blocks_remote on the client side
+                        # requires re-reading the model weights from
+                        # disk, which only happens at ComfyUI startup.
+                        print(
+                            "[server] *** NOTE *** decreasing n_blocks "
+                            "requires the CLIENT to restart ComfyUI too — "
+                            "the client-side stripped block weights are "
+                            "gone for the session and can only be reloaded "
+                            "from disk by a fresh ComfyUI launch."
+                        )
                     protocol.send_message(conn, {
                         "kind": "reconfigure_ack",
                         "tensors": [],
