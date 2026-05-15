@@ -218,6 +218,176 @@ function createConnectionIndicator(node) {
     return widget;
 }
 
+// =====================================================================
+// Help / troubleshooting modal
+//
+// Opened by the "❓" button at the bottom of the node. Shows a few
+// categories of tips covering the most common surprises: connection,
+// silent-wrong-output causes, LoRA ordering, the decrease-needs-
+// restart story, and the ComfyUI-version-mismatch gotcha (which we
+// can't auto-detect — server hello_ack doesn't carry the version).
+// =====================================================================
+
+function _helpHTML() {
+    return `
+<style>
+  .mesh-help h3 { margin: 14px 0 4px; font-size: 13px; color: #9bf; font-weight: 600; }
+  .mesh-help h3:first-child { margin-top: 0; }
+  .mesh-help ul { margin: 4px 0 6px; padding-left: 20px; color: #ddd; }
+  .mesh-help li { margin: 3px 0; }
+  .mesh-help code { background: #1a1a1a; padding: 1px 5px; border-radius: 3px;
+                    font-size: 12px; color: #ffe; }
+  .mesh-help em { color: #ffc; font-style: normal; font-weight: 600; }
+</style>
+<div class="mesh-help">
+
+<h3>🔌 Connection</h3>
+<ul>
+  <li>Indicator at the bottom of the node: <em>green</em> = connected,
+      <em>red</em> = disconnected (server died or network gone),
+      <em>grey</em> = idle (no queue this session yet).</li>
+  <li>Refused / never connects: check the server is running
+      (run <code>run_server_gui.bat</code> on the back-half host),
+      the <code>remote_host</code> + <code>remote_port</code> match,
+      and the server's port isn't blocked by a firewall.</li>
+  <li>Server died mid-session: just re-queue. Transparent reconnect
+      handles it — no need to relaunch ComfyUI.</li>
+</ul>
+
+<h3>🎚 Mismatched n_blocks (silent wrong output prevention)</h3>
+<ul>
+  <li>The Confirm button (orange) appears when <code>n_blocks_remote</code>
+      drifts from what the server is currently running. Click it to
+      restart the server with the new value before you queue.</li>
+  <li><em>Increasing</em> <code>n_blocks_remote</code> is seamless:
+      Confirm restarts the server; the client's strip extends
+      incrementally. No ComfyUI restart needed.</li>
+  <li><em>Decreasing</em> requires a ComfyUI restart on this side —
+      the client-side stripped block weights are gone for the session
+      and can only be reloaded from disk by a fresh ComfyUI launch.
+      The inline banner under the node will tell you when this
+      applies.</li>
+</ul>
+
+<h3>🎨 LoRAs</h3>
+<ul>
+  <li>Workflow ordering matters: <code>LoraLoader</code> must come
+      <em>BEFORE</em> Mesh Split FLUX in the graph for the LoRA to be
+      visible to this node and forwarded to the server.</li>
+  <li>Keep <code>forward_client_loras</code> ON so the LoRA also
+      affects back-half blocks (the ones running on the server).</li>
+  <li>The server can also load its own LoRA at startup (GUI option) —
+      it stacks with whatever the client forwards.</li>
+</ul>
+
+<h3>⚡ Performance / quality</h3>
+<ul>
+  <li><code>codec_qp</code>: 18 (default) is sharp. Towards 28 the
+      image gets noticeably softer with visible noise. 10 is
+      near-lossless.</li>
+  <li><code>codec_tile_dim</code>: leave at 4. Higher = fewer larger
+      NVENC frames per encode = faster wall-clock; 4 is the sweet spot.</li>
+  <li>Same machine (two GPUs)? Set <code>codec_mode</code> to
+      <em>raw</em>. PCIe between two GPUs is faster than NVENC
+      encode/decode — codec only helps on slow wires (LAN, VPN,
+      residential broadband).</li>
+</ul>
+
+<h3>🧩 ComfyUI version mismatch (silent-correctness gotcha)</h3>
+<ul>
+  <li>The server runs its own ComfyUI clone (in the server folder's
+      <code>..\\ComfyUI</code>). The fp8 detection + FLUX implementation
+      evolve in upstream over time; a big drift between the version
+      this client uses and the version the server uses can produce
+      subtly wrong output with no error.</li>
+  <li>Fix on the server host: run <code>update_comfy.bat</code> in the
+      server folder. <code>git pull</code>s ComfyUI + re-installs its
+      requirements.</li>
+  <li>This node doesn't know the server's ComfyUI version (the wire
+      protocol doesn't carry it), so we can't warn you automatically
+      — keep both ends reasonably current to avoid drift.</li>
+</ul>
+
+<h3>📦 Files</h3>
+<ul>
+  <li>Server install: <code>install.bat</code> in the server folder
+      (one-shot — venv + ComfyUI clone + cu128 torch + deps).</li>
+  <li>Server update: <code>update_comfy.bat</code> (the one above).</li>
+  <li>Server launch: <code>run_server_gui.bat</code> (recommended) or
+      <code>run_server.bat</code> (headless).</li>
+</ul>
+
+<h3>💬 Help / feedback</h3>
+<ul>
+  <li>Bug / feature request: see the project's README for contact
+      details.</li>
+  <li>If this rig saves you a GPU and you'd like more model
+      architectures supported (Wan, LTX-Video, FLUX.1, SD3.5 …),
+      <code>buymeacoffee.com/lorasandlenses</code> — community demand
+      drives priority.</li>
+</ul>
+</div>
+`;
+}
+
+function showHelpModal() {
+    const backdrop = document.createElement("div");
+    backdrop.style.cssText = `
+        position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 10000; font-family: Segoe UI, sans-serif;
+    `;
+    const modal = document.createElement("div");
+    modal.style.cssText = `
+        background: #2a2a2a; color: #ddd; border: 1px solid #555;
+        border-radius: 8px; padding: 16px 20px; width: 660px;
+        max-width: 92vw; max-height: 80vh; display: flex;
+        flex-direction: column; gap: 10px;
+    `;
+
+    const header = document.createElement("div");
+    header.style.cssText =
+        "font-size: 15px; font-weight: 600; color: #fff; padding-bottom: 4px; " +
+        "border-bottom: 1px solid #444;";
+    header.textContent = "Mesh Split FLUX — Tips & troubleshooting";
+
+    const body = document.createElement("div");
+    body.style.cssText =
+        "overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.5; " +
+        "padding-right: 4px;";
+    body.innerHTML = _helpHTML();
+
+    const footer = document.createElement("div");
+    footer.style.cssText = "display: flex; justify-content: flex-end; padding-top: 4px;";
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "Close";
+    closeBtn.style.cssText = `
+        background: #444; color: #ddd; border: 1px solid #555;
+        padding: 6px 16px; border-radius: 4px; cursor: pointer;
+        font-family: inherit; font-size: 13px;
+    `;
+    footer.appendChild(closeBtn);
+
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(footer);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    const close = () => backdrop.remove();
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (e) => {
+        if (e.target === backdrop) close();
+    });
+    const escHandler = (e) => {
+        if (e.key === "Escape") {
+            close();
+            document.removeEventListener("keydown", escHandler);
+        }
+    };
+    document.addEventListener("keydown", escHandler);
+}
+
 function startConnectionPoll(node) {
     let stopped = false;
 
@@ -995,6 +1165,11 @@ function setupMeshSplitFlux(node) {
     // Always-on connection indicator at the bottom of the node.
     node._mesh_conn_indicator = createConnectionIndicator(node);
     startConnectionPoll(node);
+
+    // Help / tips button at the very bottom. Opens a modal with
+    // categorised troubleshooting (connection, mismatched n_blocks,
+    // LoRA ordering, perf, version-mismatch gotcha, etc.).
+    createMeshButton(node, "help_btn", "❓ Help / tips & troubleshooting", showHelpModal);
 
     // Default width for freshly-dropped nodes. computeSize() (overridden
     // below in beforeRegisterNodeDef) already enforces MESH_NODE_MIN_W
