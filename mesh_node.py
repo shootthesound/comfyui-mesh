@@ -98,6 +98,41 @@ except ImportError:
     _HAS_COMFY_SERVER = False
 
 if _HAS_COMFY_SERVER:
+    @_ComfyPromptServer.instance.routes.get("/mesh/status")
+    async def _mesh_status_route(request):
+        """JS-side connection indicator polls this endpoint every few
+        seconds. We DON'T do a fresh TCP probe here — that would either
+        log spurious disconnects on the server or briefly block the
+        legitimate client (mesh server is single-tenant). Instead, we
+        report the state of any cached MeshClient for this (host, port):
+
+          - "connected"    — cached client has a live socket
+          - "disconnected" — cached client exists but its socket is dead
+                             (typically: server died, MeshReconnect cleared
+                             the socket, awaiting next call to reopen)
+          - "idle"         — no client cached yet (user hasn't queued
+                             anything for this host:port in this session)
+        """
+        host = (request.query.get("host") or "").strip()
+        try:
+            port = int(request.query.get("port") or "0")
+        except ValueError:
+            port = 0
+        if not host or not (1 <= port <= 65535):
+            return _aiohttp_web.json_response(
+                {"state": "idle", "error": "bad host/port"}, status=400,
+            )
+        client = _CLIENTS.get((host, port))
+        if client is None:
+            return _aiohttp_web.json_response({
+                "state": "idle", "host": host, "port": port,
+            })
+        return _aiohttp_web.json_response({
+            "state": "connected" if client._sock is not None else "disconnected",
+            "host": host, "port": port,
+            "server_n_blocks": getattr(client, "server_n_blocks", None),
+        })
+
     @_ComfyPromptServer.instance.routes.post("/mesh/reconfigure")
     async def _mesh_reconfigure_route(request):
         try:

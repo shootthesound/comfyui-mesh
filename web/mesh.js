@@ -134,6 +134,137 @@ function _onValueChange(node, widget) {
     }
 }
 
+// =====================================================================
+// Always-on connection indicator (bottom of the node)
+//
+// Polls /mesh/status every CONN_POLL_MS. Renders as a flat row at the
+// bottom of the node (no pill chrome, just a colored circle + text +
+// host:port). State semantics match the Python route:
+//
+//   connected    — cached MeshClient socket is live; data can flow
+//   disconnected — cached client socket died (server crashed, network)
+//   idle         — no MeshClient yet; user hasn't queued for this
+//                  host:port this session
+//
+// The polling interval is per-node; cleaned up on node.onRemoved.
+// =====================================================================
+
+const CONN_POLL_MS = 3000;
+
+const CONN_COLORS = {
+    connected:    { dot: "#3b9b3b", text: "Connected" },
+    disconnected: { dot: "#c43030", text: "Disconnected" },
+    idle:         { dot: "#888888", text: "Idle" },
+};
+
+function createConnectionIndicator(node) {
+    const widget = {
+        type: "MESH_CONN_INDICATOR",
+        name: "_mesh_conn",
+        value: null,
+        options: {},
+        serialize: false,
+        _mesh_role: "conn_indicator",
+        _mesh_state: "idle",
+        _mesh_n_blocks: null,
+
+        draw(ctx, n, ww, y) {
+            const W = n.size[0];
+            const h = SLOT_H * 0.7;  // slimmer than a pill
+            const padX = MESH_PILL_PAD;
+
+            ctx.textBaseline = "middle";
+            ctx.font = "11px Segoe UI, Arial";
+
+            const conf = CONN_COLORS[this._mesh_state] || CONN_COLORS.idle;
+
+            // Status dot
+            const cx = padX + 8;
+            const cy = y + h / 2;
+            const r = 5;
+            ctx.fillStyle = conf.dot;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#1a1a1a";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Status label
+            ctx.fillStyle = "#ddd";
+            ctx.textAlign = "left";
+            ctx.fillText(conf.text, cx + r + 8, cy);
+
+            // Right side: host:port (and server n_blocks if known)
+            const hostW = n.widgets.find((w) => w.name === "remote_host");
+            const portW = n.widgets.find((w) => w.name === "remote_port");
+            if (hostW && portW) {
+                let right = `${hostW.value}:${portW.value}`;
+                if (this._mesh_n_blocks != null) {
+                    right += `  ·  server n=${this._mesh_n_blocks}`;
+                }
+                ctx.fillStyle = "#888";
+                ctx.textAlign = "right";
+                ctx.fillText(right, W - padX - 8, cy);
+            }
+        },
+
+        computeSize() { return [0, Math.round(SLOT_H * 0.7)]; },
+
+        // Not interactive.
+        mouse() { return false; },
+    };
+    node.widgets.push(widget);
+    return widget;
+}
+
+function startConnectionPoll(node) {
+    let stopped = false;
+
+    const tick = async () => {
+        if (stopped) return;
+        const indicator = node._mesh_conn_indicator;
+        if (!indicator) return;
+        const hostW = node.widgets.find((w) => w.name === "remote_host");
+        const portW = node.widgets.find((w) => w.name === "remote_port");
+        if (!hostW || !portW) return;
+        try {
+            const url = `/mesh/status?host=${encodeURIComponent(String(hostW.value))}` +
+                        `&port=${encodeURIComponent(String(portW.value))}`;
+            const resp = await fetch(url);
+            if (resp.ok) {
+                const data = await resp.json();
+                const state = (data && data.state) || "idle";
+                const newN = (data && data.server_n_blocks != null)
+                    ? data.server_n_blocks : null;
+                if (indicator._mesh_state !== state ||
+                    indicator._mesh_n_blocks !== newN) {
+                    indicator._mesh_state = state;
+                    indicator._mesh_n_blocks = newN;
+                    node.setDirtyCanvas(true, true);
+                }
+            }
+        } catch (e) {
+            // Network error reaching ComfyUI itself — show as disconnected
+            // so the user gets a useful signal.
+            if (indicator._mesh_state !== "disconnected") {
+                indicator._mesh_state = "disconnected";
+                node.setDirtyCanvas(true, true);
+            }
+        }
+    };
+
+    tick();  // initial check, no wait
+    const interval = setInterval(tick, CONN_POLL_MS);
+
+    const orig_onRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        stopped = true;
+        clearInterval(interval);
+        if (orig_onRemoved) orig_onRemoved.apply(this, arguments);
+    };
+}
+
 function createConfirmButton(node) {
     // Pushed to the END of node.widgets so it never participates in
     // positional widgets_values serialization (serialize:false too,
@@ -860,6 +991,10 @@ function setupMeshSplitFlux(node) {
 
     // Confirm-restart button (hidden by default).
     node._mesh_confirm_btn = createConfirmButton(node);
+
+    // Always-on connection indicator at the bottom of the node.
+    node._mesh_conn_indicator = createConnectionIndicator(node);
+    startConnectionPoll(node);
 
     // Default width for freshly-dropped nodes. computeSize() (overridden
     // below in beforeRegisterNodeDef) already enforces MESH_NODE_MIN_W
