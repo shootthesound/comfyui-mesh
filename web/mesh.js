@@ -43,6 +43,63 @@ const MESH_NODE_NAME = "MeshSplitFlux";
 // fixed constant (~20), not the slot height we asked for.
 const SLOT_H = 30;
 
+// Horizontal padding between the node's outer border and the pill body.
+// Same value on both sides → pills are centered within the node body.
+// Bumped from 8 to give a visible margin so widgets don't hug the node
+// edge, especially on the right where the framework's reserved socket
+// area used to make pills look left-aligned.
+const MESH_PILL_PAD = 22;
+
+// =====================================================================
+// Last-used values (globally remembered across fresh node drops)
+//
+// ComfyUI already persists widget values per-workflow via the saved
+// JSON. This adds a second layer: when the user drops a FRESH node
+// (no saved values to restore from), pre-fill it with whatever the
+// last-touched mesh node was set to — so they don't have to retype
+// remote_host / n_blocks_remote / etc every time.
+//
+// Stored in browser localStorage as a single JSON object keyed by
+// widget name. Saved on every value change. Loaded on node creation
+// AFTER the pill widgets are in place; if onConfigure fires later
+// (workflow restore), it overwrites our last-used with the saved
+// values, which is correct — the workflow's intent wins.
+// =====================================================================
+
+const LAST_USED_KEY = "comfyui-mesh.lastUsed.MeshSplitFlux";
+
+function _loadLastUsed() {
+    try {
+        const raw = localStorage.getItem(LAST_USED_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return (parsed && typeof parsed === "object") ? parsed : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function _saveLastUsed(values) {
+    try {
+        localStorage.setItem(LAST_USED_KEY, JSON.stringify(values));
+    } catch (e) { /* noop — localStorage may be disabled */ }
+}
+
+function _captureNodeValues(node) {
+    const out = {};
+    for (const w of (node.widgets || [])) {
+        if (w._mesh_role && w.value !== undefined && w.value !== null) {
+            out[w.name] = w.value;
+        }
+    }
+    return out;
+}
+
+function _persistLastUsed(node) {
+    if (!node) return;
+    _saveLastUsed(_captureNodeValues(node));
+}
+
 const PILL_COLORS = {
     body:    "#1f1f1f",
     border:  "#555",
@@ -274,10 +331,15 @@ function createPillNumber(node, name, opts = {}) {
             _mesh_drag: null,
 
             draw(ctx, n, ww, y) {
+                // Use n.size[0] directly — the `ww` LiteGraph passes is
+                // narrower than the node body on some ComfyUI builds,
+                // which made pills look left-clustered with empty space
+                // on the right.
+                const W = n.size[0];
                 const h = SLOT_H;
-                const padX = 8;
+                const padX = MESH_PILL_PAD;
                 const arrowW = 16;
-                drawPillBackground(ctx, padX, y + 2, ww - padX * 2, h - 4);
+                drawPillBackground(ctx, padX, y + 2, W - padX * 2, h - 4);
 
                 ctx.textBaseline = "middle";
                 ctx.font = "12px Segoe UI, Arial";
@@ -285,20 +347,19 @@ function createPillNumber(node, name, opts = {}) {
                 ctx.fillStyle = PILL_COLORS.arrow;
                 ctx.textAlign = "center";
                 ctx.fillText("◀", padX + arrowW / 2 + 4, y + h / 2);
-                ctx.fillText("▶", ww - padX - arrowW / 2 - 4, y + h / 2);
+                ctx.fillText("▶", W - padX - arrowW / 2 - 4, y + h / 2);
 
                 ctx.fillStyle = PILL_COLORS.label;
                 ctx.textAlign = "left";
                 const labelX = padX + arrowW + 12;
-                const labelText = ellipsize(ctx, this.label, ww * 0.5);
-                ctx.fillText(labelText, labelX, y + h / 2);
+                ctx.fillText(this.label, labelX, y + h / 2);
 
                 ctx.fillStyle = PILL_COLORS.value;
                 ctx.textAlign = "right";
                 const valStr = this.options.integer
                     ? String(Math.round(this.value))
                     : this.value.toFixed(2);
-                ctx.fillText(valStr, ww - padX - arrowW - 12, y + h / 2);
+                ctx.fillText(valStr, W - padX - arrowW - 12, y + h / 2);
             },
 
             computeSize() { return [0, SLOT_H]; },
@@ -320,21 +381,23 @@ function createPillNumber(node, name, opts = {}) {
 
             mouse(event, pos, n) {
                 const x = pos[0];
-                const ww = n.size[0];
-                const padX = 8;
+                const W = n.size[0];
+                const padX = MESH_PILL_PAD;
                 const arrowHit = 24;
                 const onLeft = x < padX + arrowHit;
-                const onRight = x > ww - padX - arrowHit;
+                const onRight = x > W - padX - arrowHit;
 
                 if (event.type === "pointerdown" || event.type === "mousedown") {
                     if (onLeft) {
                         this._setValue(this.value - this.options.step);
                         n.setDirtyCanvas(true, true);
+                        _persistLastUsed(n);
                         return true;
                     }
                     if (onRight) {
                         this._setValue(this.value + this.options.step);
                         n.setDirtyCanvas(true, true);
+                        _persistLastUsed(n);
                         return true;
                     }
                     if (event.detail === 2) {
@@ -346,6 +409,7 @@ function createPillNumber(node, name, opts = {}) {
                             if (!isNaN(parsed)) {
                                 this._setValue(parsed);
                                 n.setDirtyCanvas(true, true);
+                                _persistLastUsed(n);
                             }
                         }
                         this._mesh_drag = null;
@@ -367,6 +431,7 @@ function createPillNumber(node, name, opts = {}) {
                 if (event.type === "pointerup" || event.type === "mouseup") {
                     if (this._mesh_drag) {
                         this._mesh_drag = null;
+                        _persistLastUsed(n);  // commit drag-final value
                         return true;
                     }
                 }
@@ -393,9 +458,10 @@ function createPillCombo(node, name, opts = {}) {
             _mesh_role: `combo_${name}`,
 
             draw(ctx, n, ww, y) {
+                const W = n.size[0];
                 const h = SLOT_H;
-                const padX = 8;
-                drawPillBackground(ctx, padX, y + 2, ww - padX * 2, h - 4);
+                const padX = MESH_PILL_PAD;
+                drawPillBackground(ctx, padX, y + 2, W - padX * 2, h - 4);
 
                 ctx.textBaseline = "middle";
                 ctx.font = "12px Segoe UI, Arial";
@@ -408,13 +474,13 @@ function createPillCombo(node, name, opts = {}) {
 
                 const arrowW = 16;
                 const valueX = padX + 8 + labelW + 8;
-                const maxW = ww - valueX - arrowW - padX - 8;
+                const maxW = W - valueX - arrowW - padX - 8;
                 ctx.fillStyle = PILL_COLORS.value;
                 ctx.fillText(ellipsize(ctx, String(this.value ?? ""), maxW), valueX, y + h / 2);
 
                 ctx.fillStyle = PILL_COLORS.arrow;
                 ctx.textAlign = "right";
-                ctx.fillText("▾", ww - padX - 6, y + h / 2);
+                ctx.fillText("▾", W - padX - 6, y + h / 2);
             },
 
             computeSize() { return [0, SLOT_H]; },
@@ -430,6 +496,7 @@ function createPillCombo(node, name, opts = {}) {
                             try { origCallback.call(this, v); } catch (e) { /* noop */ }
                         }
                         n.setDirtyCanvas(true, true);
+                        _persistLastUsed(n);
                     },
                 });
                 return true;
@@ -453,9 +520,10 @@ function createPillBool(node, name, opts = {}) {
             _mesh_role: `bool_${name}`,
 
             draw(ctx, n, ww, y) {
+                const W = n.size[0];
                 const h = SLOT_H;
-                const padX = 8;
-                drawPillBackground(ctx, padX, y + 2, ww - padX * 2, h - 4);
+                const padX = MESH_PILL_PAD;
+                drawPillBackground(ctx, padX, y + 2, W - padX * 2, h - 4);
 
                 ctx.textBaseline = "middle";
                 ctx.font = "12px Segoe UI, Arial";
@@ -467,7 +535,7 @@ function createPillBool(node, name, opts = {}) {
                 // ON/OFF chip on right
                 const chipW = 50;
                 const chipH = h - 12;
-                const chipX = ww - padX - chipW - 6;
+                const chipX = W - padX - chipW - 6;
                 const chipY = y + 6;
                 ctx.fillStyle = this.value ? PILL_COLORS.boolOn : PILL_COLORS.boolOff;
                 ctx.fillRect(chipX, chipY, chipW, chipH);
@@ -488,6 +556,7 @@ function createPillBool(node, name, opts = {}) {
                     try { origCallback.call(this, this.value); } catch (e) { /* noop */ }
                 }
                 n.setDirtyCanvas(true, true);
+                _persistLastUsed(n);
                 return true;
             },
         };
@@ -509,9 +578,10 @@ function createPillString(node, name, opts = {}) {
             _mesh_role: `string_${name}`,
 
             draw(ctx, n, ww, y) {
+                const W = n.size[0];
                 const h = SLOT_H;
-                const padX = 8;
-                drawPillBackground(ctx, padX, y + 2, ww - padX * 2, h - 4);
+                const padX = MESH_PILL_PAD;
+                drawPillBackground(ctx, padX, y + 2, W - padX * 2, h - 4);
 
                 ctx.textBaseline = "middle";
                 ctx.font = "12px Segoe UI, Arial";
@@ -524,7 +594,7 @@ function createPillString(node, name, opts = {}) {
 
                 const editIconW = 20;
                 const valueX = padX + 8 + labelW + 8;
-                const maxW = ww - valueX - editIconW - padX - 8;
+                const maxW = W - valueX - editIconW - padX - 8;
                 ctx.fillStyle = PILL_COLORS.value;
                 const display = String(this.value || "");
                 ctx.fillText(ellipsize(ctx, display, maxW), valueX, y + h / 2);
@@ -532,7 +602,7 @@ function createPillString(node, name, opts = {}) {
                 ctx.fillStyle = PILL_COLORS.arrow;
                 ctx.textAlign = "right";
                 ctx.font = "11px Segoe UI, Arial";
-                ctx.fillText("✎", ww - padX - 6, y + h / 2);
+                ctx.fillText("✎", W - padX - 6, y + h / 2);
             },
 
             computeSize() { return [0, SLOT_H]; },
@@ -546,6 +616,7 @@ function createPillString(node, name, opts = {}) {
                         try { origCallback.call(this, entered); } catch (e) { /* noop */ }
                     }
                     n.setDirtyCanvas(true, true);
+                    _persistLastUsed(n);
                 }
                 return true;
             },
@@ -568,19 +639,20 @@ function createMeshButton(node, role, label, onClick) {
         serialize: false,  // safe here because we PUSH to end, not splice into a positional slot
 
         draw(ctx, n, ww, y) {
+            const W = n.size[0];
             const h = SLOT_H;
-            const padX = 8;
+            const padX = MESH_PILL_PAD;
             ctx.fillStyle = "#363636";
-            ctx.fillRect(padX, y + 2, ww - padX * 2, h - 4);
+            ctx.fillRect(padX, y + 2, W - padX * 2, h - 4);
             ctx.strokeStyle = PILL_COLORS.border;
             ctx.lineWidth = 1;
-            ctx.strokeRect(padX + 0.5, y + 2.5, ww - padX * 2 - 1, h - 5);
+            ctx.strokeRect(padX + 0.5, y + 2.5, W - padX * 2 - 1, h - 5);
 
             ctx.fillStyle = PILL_COLORS.value;
             ctx.font = "12px Segoe UI, Arial";
             ctx.textBaseline = "middle";
             ctx.textAlign = "center";
-            ctx.fillText(this.name || "", ww / 2, y + h / 2);
+            ctx.fillText(this.name || "", W / 2, y + h / 2);
         },
 
         computeSize() { return [0, SLOT_H]; },
@@ -613,14 +685,41 @@ function createMeshButton(node, role, label, onClick) {
 const MESH_NODE_MIN_W = 410;
 
 function setupMeshSplitFlux(node) {
-    createPillNumber(node, "n_blocks_remote", { label: "n_blocks_remote", integer: true });
+    // Pass min/max/step EXPLICITLY for INT pills — fw.options has been
+    // unreliable across ComfyUI versions (missing min/max on some
+    // builds, default step that isn't 1 on others). Hardcoding here
+    // matches the values declared in the Python INPUT_TYPES.
+    createPillNumber(node, "n_blocks_remote", {
+        label: "n_blocks_remote", integer: true, min: 0, max: 256, step: 1,
+    });
     createPillString(node, "remote_host", { label: "remote_host" });
-    createPillNumber(node, "remote_port",   { label: "remote_port", integer: true });
-    createPillCombo(node,  "codec_mode",    { label: "codec_mode" });
-    createPillNumber(node, "codec_qp",      { label: "codec_qp", integer: true });
+    createPillNumber(node, "remote_port", {
+        label: "remote_port", integer: true, min: 1, max: 65535, step: 1,
+    });
+    createPillCombo(node, "codec_mode", { label: "codec_mode" });
+    createPillNumber(node, "codec_qp", {
+        label: "codec_qp", integer: true, min: 0, max: 51, step: 1,
+    });
     createPillBool(node,   "codec_lossless",{ label: "codec_lossless" });
     createPillCombo(node,  "codec_tile_dim",{ label: "codec_tile_dim" });
     createPillBool(node,   "forward_client_loras", { label: "forward_client_loras" });
+
+    // Apply globally remembered last-used values. Loaded workflows
+    // will overwrite this in onConfigure (which fires AFTER us with
+    // the saved widgets_values), so saved-workflow intent always wins
+    // — last-used only matters for fresh node drops.
+    const lastUsed = _loadLastUsed();
+    for (const w of node.widgets) {
+        if (w._mesh_role && Object.prototype.hasOwnProperty.call(lastUsed, w.name)) {
+            const v = lastUsed[w.name];
+            // Defensive: only restore if the type roughly matches what
+            // the widget already holds (e.g. don't poke a number into a
+            // string field if localStorage is corrupted).
+            if (typeof v === typeof w.value || w.value === null || w.value === undefined) {
+                w.value = v;
+            }
+        }
+    }
 
     // Default width for freshly-dropped nodes. computeSize() (overridden
     // below in beforeRegisterNodeDef) already enforces MESH_NODE_MIN_W
