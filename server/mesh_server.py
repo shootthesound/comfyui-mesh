@@ -86,6 +86,7 @@ sys.path.insert(0, str(HERE))
 import codec
 import protocol
 import vec_io
+import lora_io
 
 
 # ---------------------------------------------------------------------
@@ -435,11 +436,12 @@ def _decode_request_tensors(header: dict, blobs: list[bytes], device: torch.devi
     # Reconstruct vec (modulation tuple) via vec_io's named-tensor scheme.
     # Note: vec_orig is shipped as a separate top-level tensor (not part of
     # the modulation tuple), so we exclude it from the vec_io reconstruction.
+    # client_lora is also not a codec'd tensor — pass-through bytes.
     vec_kind = header.get("vec_kind", "tensor")
     vec_named: dict[str, torch.Tensor] = {}
     for name, (wire, blob) in by_name.items():
-        if name == "vec_orig":
-            continue  # handled separately below
+        if name in ("vec_orig", "client_lora"):
+            continue
         if name == "vec" or name.startswith("vec_"):
             vec_named[name] = codec.decode(wire, blob, device=device)
     vec = vec_io.reconstruct_vec(vec_kind, vec_named)
@@ -455,7 +457,14 @@ def _decode_request_tensors(header: dict, blobs: list[bytes], device: torch.devi
     attn_mask = None
     if header.get("has_attn_mask"):
         attn_mask = codec.decode(*by_name["attn_mask"], device=device)
-    return img, txt, vec, vec_orig, pe, attn_mask
+
+    # client_lora is opaque safetensors bytes shipped only when the
+    # client's LoRA session changed. None = blob not present this call.
+    client_lora_blob = None
+    if "client_lora" in by_name:
+        _wire, client_lora_blob = by_name["client_lora"]
+
+    return img, txt, vec, vec_orig, pe, attn_mask, client_lora_blob
 
 
 def _encode_response_tensors(img: torch.Tensor, txt: torch.Tensor, codec_mode: str, codec_qp: int, codec_lossless: bool, codec_tile_dim: int = 4):
@@ -464,16 +473,56 @@ def _encode_response_tensors(img: torch.Tensor, txt: torch.Tensor, codec_mode: s
     return [img_w, txt_w]
 
 
-def serve(model, host: str, port: int, device: torch.device):
+def _apply_client_lora(patcher, blob: bytes, session_id: str, device: torch.device):
+    """Apply a client-shipped LoRA bundle to the patcher. Forces a
+    re-stage so patches actually fold into the loaded weights (rather
+    than ComfyUI's lazy cast-time application). Returns the count of
+    patches applied."""
+    import comfy.model_management
+    patches = lora_io.decode_patches_from_safetensors(blob, device=device)
+    n_keys = len(patches)
+    n_entries = sum(len(v) for v in patches.values())
+    accepted = patcher.add_patches(patches, 1.0)  # strengths baked in
+    print(f"[server] client LoRA: applied {len(accepted)} patches "
+          f"({n_keys} keys, {n_entries} entries) — session={session_id}")
+    comfy.model_management.load_models_gpu([patcher], force_full_load=True)
+    return len(accepted)
+
+
+def _unapply_client_lora(patcher):
+    """Roll back any previously-applied client LoRA. Uses ComfyUI's
+    standard unpatch_model (clears all patches). The server-config
+    LoRA from --lora is then RE-applied so it survives the swap.
+
+    NOTE: this also clears server-config LoRA. Caller must reapply it
+    via apply_server_lora if it was set."""
+    import comfy.model_management
+    if patcher.patches:
+        try:
+            patcher.unpatch_model()
+        except Exception as e:
+            print(f"[server] unpatch_model failed (will continue): {e}")
+        # Clear the patches dict so add_patches starts fresh
+        patcher.patches.clear()
+    comfy.model_management.load_models_gpu([patcher], force_full_load=True)
+
+
+def serve(patcher, host: str, port: int, device: torch.device,
+          server_lora_path: Path = None, server_lora_strength: float = 1.0):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host, port))
     s.listen(1)
     print(f"[server] listening on {host}:{port}")
 
+    model = patcher.model.diffusion_model
     n_double_blocks = len(model.double_blocks)
     n_single_blocks = len(model.single_blocks)
     n_total_loaded = n_double_blocks + n_single_blocks
+
+    # Track currently-applied client LoRA session id so we know when to
+    # swap. None = no client LoRA applied; "empty" = client says "no LoRA".
+    current_client_lora_session: str | None = None
 
     while True:
         conn, addr = s.accept()
@@ -501,8 +550,34 @@ def serve(model, host: str, port: int, device: torch.device):
                     # slim server always runs its full loaded block list.
                     client_start_block = int(header.get("start_block", 0))
                     t0 = time.time()
-                    img, txt, vec, vec_orig, pe, attn_mask = _decode_request_tensors(header, blobs, device)
+                    (img, txt, vec, vec_orig, pe, attn_mask,
+                     client_lora_blob) = _decode_request_tensors(header, blobs, device)
                     t_decode = time.time() - t0
+
+                    # ---- Client-LoRA lifecycle ----
+                    # Client transmits a session id every call; the blob
+                    # itself only when the session changed.
+                    incoming_session = header.get("client_lora_session", "") or ""
+                    if incoming_session and incoming_session != current_client_lora_session:
+                        # Session changed — unpatch any prior LoRAs
+                        # (server-config + previous client-supplied),
+                        # then re-apply server-config + new client-supplied.
+                        print(f"[server] client LoRA session change: "
+                              f"{current_client_lora_session!r} -> {incoming_session!r}")
+                        _unapply_client_lora(patcher)
+                        if server_lora_path is not None:
+                            apply_server_lora(patcher, server_lora_path, server_lora_strength)
+                        if incoming_session != "empty" and client_lora_blob:
+                            _apply_client_lora(patcher, client_lora_blob, incoming_session, device)
+                        current_client_lora_session = incoming_session
+                    elif incoming_session == "" and current_client_lora_session is not None:
+                        # Client turned forwarding off entirely after having
+                        # sent something previously. Unpatch + restore server LoRA.
+                        print(f"[server] client LoRA forwarding stopped — unpatching")
+                        _unapply_client_lora(patcher)
+                        if server_lora_path is not None:
+                            apply_server_lora(patcher, server_lora_path, server_lora_strength)
+                        current_client_lora_session = None
 
                     t0 = time.time()
                     img_out, txt_out = forward_back_half(
@@ -588,8 +663,11 @@ def main():
         if not args.lora.is_file():
             raise FileNotFoundError(f"LoRA file not found: {args.lora}")
         apply_server_lora(patcher, args.lora, args.lora_strength)
-    diffusion = patcher.model.diffusion_model
-    serve(diffusion, args.bind, args.port, device)
+    serve(
+        patcher, args.bind, args.port, device,
+        server_lora_path=args.lora,
+        server_lora_strength=args.lora_strength,
+    )
 
 
 if __name__ == "__main__":

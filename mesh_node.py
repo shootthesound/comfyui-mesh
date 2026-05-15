@@ -47,6 +47,7 @@ import torch
 from . import codec
 from . import protocol
 from . import vec_io
+from . import lora_io
 
 
 _LAST_STATS: dict = {
@@ -72,6 +73,10 @@ class MeshClient:
         self.host = host
         self.port = port
         self._sock: socket.socket | None = None
+        # Track which client-LoRA session id was last shipped to this
+        # server, to avoid reshipping ~MB-sized LoRA payloads every
+        # timestep when nothing changed.
+        self._last_sent_lora_session: str = ""
 
     def _ensure_open(self) -> socket.socket:
         if self._sock is not None:
@@ -110,6 +115,8 @@ class MeshClient:
         codec_qp: int,
         codec_lossless: bool,
         codec_tile_dim: int,
+        client_lora_session: str = "",       # "" or "empty" -> no LoRA on client
+        client_lora_blob: bytes = b"",       # safetensors blob; empty if unchanged
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Send the back-half-double-blocks request and receive the
         post-double-block (img, txt) state."""
@@ -159,12 +166,32 @@ class MeshClient:
             wire_tensors.append(am_w.to_header())
             blobs.append(am_w.bytes_payload)
 
+        # Client-LoRA blob — included only when the session id changed
+        # since last shipped (caller is responsible for tracking that).
+        # Treated as opaque bytes by the wire layer; server detects by name
+        # and feeds it to lora_io.decode_patches_from_safetensors.
+        if client_lora_blob:
+            wire_tensors.append({
+                "name": "client_lora",
+                "encoding": "lora_safetensors",
+                "size": len(client_lora_blob),
+                "dtype": "bytes",
+                "shape": [],
+                "extra": {"session_id": client_lora_session},
+            })
+            blobs.append(client_lora_blob)
+
         header = {
             "kind": "forward_double_blocks",
             "tensors": wire_tensors,
             "start_block": int(start_block),
             "vec_kind": vec_kind,
             "has_attn_mask": attn_mask is not None,
+            # Top-level so server can lifecycle-manage even when the blob
+            # is omitted (unchanged session). Empty string = client has
+            # forwarding off OR no LoRAs loaded; "empty" = explicit empty
+            # set; otherwise a 16-char hex id from lora_io.patches_session_id.
+            "client_lora_session": client_lora_session,
         }
 
         bytes_sent = 4 + 4 + len(_dumps_len(header)) + sum(len(b) for b in blobs)
@@ -214,16 +241,28 @@ def _make_block_replacement(
     client: MeshClient,
     split_index: int,
     n_double_blocks: int,
+    n_single_blocks: int,
+    n_double_remote: int,
+    n_single_remote: int,
     codec_mode: str,
     codec_qp: int,
     codec_lossless: bool,
     codec_tile_dim: int,
+    forward_client_loras: bool,
+    patcher_capture: dict,
     vec_orig_capture: dict,
 ):
     """Return a callable that ComfyUI's patches_replace will invoke at
     block `split_index`. It does the remote forward for blocks
     [split_index..n_double_blocks) (and any configured single_blocks)
-    and returns the post-back-half state."""
+    and returns the post-back-half state.
+
+    Optionally inspects the live ModelPatcher.patches dict on each call
+    and forwards the relevant client-side LoRA patches to the server,
+    but only when the patches changed since last shipped (cheap session-
+    id hash detects the change).
+    """
+    drop_db = n_double_blocks - n_double_remote
 
     def replace_at_split(args, extras):
         img = args["img"]
@@ -238,6 +277,38 @@ def _make_block_replacement(
         # to compute the single-block modulation locally.
         vec_orig = vec_orig_capture.get("vec_orig")
 
+        # ---- Client-LoRA forwarding (optional) ----
+        client_lora_session = ""
+        client_lora_blob = b""
+        if forward_client_loras:
+            patcher = patcher_capture.get("patcher")
+            if patcher is not None and getattr(patcher, "patches", None):
+                # Filter the live patches dict to only the keys targeting
+                # server-held layers, with double_block indices remapped
+                # to the slim model's coords.
+                slim_patches = lora_io.filter_and_remap_patches(
+                    patcher.patches,
+                    drop_db=drop_db,
+                    n_single_remote=n_single_remote,
+                    n_double_total=n_double_blocks,
+                )
+                client_lora_session = lora_io.patches_session_id(slim_patches)
+            else:
+                # forward toggle on, but no patches loaded — explicit
+                # empty session so the server unpatches anything left over.
+                client_lora_session = "empty"
+
+            # Only encode + ship if the session changed since we last
+            # sent it to THIS client (host, port).
+            if client_lora_session and client_lora_session != client._last_sent_lora_session:
+                if client_lora_session == "empty":
+                    # Signal "no patches" without a blob — server unpatches.
+                    client_lora_blob = b""
+                else:
+                    client_lora_blob = lora_io.encode_patches_to_safetensors(slim_patches)
+                # Mark sent regardless of whether the blob has bytes
+                client._last_sent_lora_session = client_lora_session
+
         new_img, new_txt = client.call_double_blocks(
             img=img,
             txt=txt,
@@ -250,6 +321,8 @@ def _make_block_replacement(
             codec_qp=codec_qp,
             codec_lossless=codec_lossless,
             codec_tile_dim=codec_tile_dim,
+            client_lora_session=client_lora_session,
+            client_lora_blob=client_lora_blob,
         )
         return {"img": new_img, "txt": new_txt}
 
@@ -341,6 +414,17 @@ class MeshSplitFlux:
                                                        "4=default (~130ms), 8=most aggressive (~110ms). Compression "
                                                        "ratio is essentially unchanged across values."
                                                    )}),
+                "forward_client_loras": ("BOOLEAN", {"default": True,
+                                                       "tooltip": (
+                                                           "When ON, any LoRAs loaded BEFORE this node in the workflow "
+                                                           "(via ComfyUI's standard LoraLoader) get serialized via "
+                                                           "safetensors and shipped to the server so the LoRA applies "
+                                                           "to the back-half blocks too. Required for full-model LoRA "
+                                                           "effect when offloading any blocks. Auto-detects changes; "
+                                                           "ships the blob only when LoRA set / strength changes. "
+                                                           "Workflow ordering matters: LoraLoader must come BEFORE "
+                                                           "MeshSplit FLUX in the graph for this to see them."
+                                                       )}),
             }
         }
 
@@ -349,7 +433,7 @@ class MeshSplitFlux:
     CATEGORY = "mesh"
     OUTPUT_NODE = False
 
-    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim):
+    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim, forward_client_loras):
         # Reach into the diffusion model to learn block counts
         diffusion = model.model.diffusion_model
         n_double_blocks = len(diffusion.double_blocks)
@@ -392,10 +476,23 @@ class MeshSplitFlux:
         # rather than mutating model_options directly so we don't fight
         # the ModelPatcher's copy-on-write semantics.
         m = model.clone()
+
+        # Capture the (post-clone) patcher reference so the per-call
+        # closure can introspect its .patches dict at sample time. This
+        # is the patcher that downstream nodes (KSampler) will see; if
+        # LoraLoader runs BEFORE this node, m.patches has the LoRA
+        # patches at this point and they propagate via clone().
+        # If LoraLoader runs AFTER, this reference won't see those
+        # later-added patches — see the tooltip on forward_client_loras.
+        patcher_capture: dict = {"patcher": m}
+
         if n_blocks_remote > 0:
             replace_at_split = _make_block_replacement(
-                client, split_index, n_double_blocks,
+                client, split_index, n_double_blocks, n_single_blocks,
+                n_double_remote, n_single_remote,
                 codec_mode, codec_qp, codec_lossless, codec_tile_dim,
+                forward_client_loras,
+                patcher_capture,
                 vec_orig_capture,
             )
             double_pass = _make_double_passthrough()
