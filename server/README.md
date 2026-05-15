@@ -29,7 +29,8 @@ Two headline architectural properties:
 server/
 ├── README.md                   ← this file
 ├── CLAUDE.md                   ← brief for an AI agent doing this side's setup
-├── install.bat                 ← ONE-SHOT INSTALLER — venv + ComfyUI + deps
+├── install.bat                 ← ONE-SHOT INSTALLER — venv + ComfyUI + cu128 torch + deps
+├── update_comfy.bat            ← git pull on ..\ComfyUI + re-install requirements
 ├── requirements.txt            ← what install.bat installs (also for manual use)
 ├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
 │                                  Handles reconfigure messages by writing a handoff
@@ -75,12 +76,36 @@ That single command:
 2. Creates a local `.venv` in this folder
 3. Upgrades pip + wheel
 4. Clones ComfyUI to `..\ComfyUI` if it's not already there
-5. Installs ComfyUI's requirements (this pulls torch with CUDA — multi-GB,
-   takes a minute or two on a fast connection)
-6. Installs the server's extras (cuda-bindings)
-7. Runs `install_check.py` to confirm everything is wired up
+5. **Installs CUDA-enabled torch from PyTorch's cu128 wheels.** Covers
+   every RTX 30/40/50-series card. (50-series Blackwell *requires* cu128;
+   older CUDA wheels silently fall back to CPU on those cards. cu128
+   works fine on 30/40 too — one wheel set covers all current consumer
+   Nvidia GPUs with NVENC.) This is multi-GB; takes a minute or two on
+   a fast connection.
+6. Installs ComfyUI's other requirements (transformers, einops, etc.)
+7. Installs the server's extras (cuda-bindings)
+8. Runs `install_check.py` to confirm everything is wired up
 
 Re-running `install.bat` is safe — every step is idempotent.
+
+**Why we install torch ourselves:** ComfyUI's `requirements.txt`
+just lists `torch` with no CUDA specifier. On Windows that pulls
+the CPU-only wheel from PyPI, which silently breaks NVENC + CUDA
+inference. The cu128 step above runs BEFORE the comfy requirements
+so the GPU-enabled wheel wins.
+
+### Updating ComfyUI later
+
+```
+update_comfy.bat
+```
+
+Pulls the latest ComfyUI (`git pull` in `..\ComfyUI`) and re-installs
+its requirements + the server's extras. Run this whenever the client
+side flags a ComfyUI-version mismatch (the fp8 detection + FLUX
+implementation evolve in upstream; mismatched ComfyUI versions between
+client and server is the most common silent-correctness gotcha).
+Doesn't touch torch — re-run `install.bat` for that.
 
 After it finishes, drop your FLUX safetensors into this folder and launch
 the server (see below).

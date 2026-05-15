@@ -8,11 +8,17 @@ REM    1. Finds Python on your system (py launcher preferred, python fallback)
 REM    2. Creates a local .venv in this folder if one doesn't exist
 REM    3. Upgrades pip + wheel inside the venv
 REM    4. Clones ComfyUI as ..\ComfyUI if not already there
-REM    5. Installs ComfyUI's requirements (gets torch with CUDA)
-REM    6. Installs the back-half server's extras (cuda-bindings, etc.)
-REM    7. Runs install_check.py to confirm everything is wired up
+REM    5. Installs CUDA-enabled torch from PyTorch's cu128 wheels.
+REM       Covers RTX 30/40/50 series. (50-series Blackwell REQUIRES cu128;
+REM       older CUDA wheels silently fall back to CPU on those cards.
+REM       cu128 also works fine on 30/40, so one wheel set covers all.)
+REM    6. Installs ComfyUI's other requirements (transformers, einops, etc.)
+REM    7. Installs the back-half server's extras (cuda-bindings)
+REM    8. Runs install_check.py to confirm everything is wired up
 REM
 REM  Re-run safely — every step is idempotent. Skips work already done.
+REM
+REM  To pull a newer ComfyUI later:  update_comfy.bat
 REM
 REM  After this finishes, drop your FLUX safetensors into this folder
 REM  and double-click run_server_gui.bat (or run_server.bat).
@@ -94,11 +100,27 @@ if exist "%COMFY_DIR%\comfy" (
     set "SKIP_COMFY_DEPS=0"
 )
 
-REM ---- 5. Install ComfyUI's requirements (gets torch with CUDA) ----
+REM ---- 5. CUDA-enabled torch FIRST. ComfyUI's requirements.txt
+REM ----    lists `torch` with no CUDA specifier; pip would otherwise
+REM ----    pull the CPU-only wheel from PyPI on Windows (which
+REM ----    silently breaks NVENC + CUDA inference). cu128 supports
+REM ----    every 30/40/50-series card. 50-series Blackwell REQUIRES
+REM ----    cu128 specifically (older CUDA wheels fall back to CPU).
+echo [4/7] installing CUDA-enabled torch ^(cu128 — covers 30/40/50 series^) ...
+"%VENV_PY%" -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 (
+    echo [install] ERROR: CUDA torch install failed.
+    echo            Check your internet connection and try again.
+    echo            Alternatively, install torch manually with the right
+    echo            cu*** wheels for your card from https://pytorch.org/
+    exit /b 1
+)
+
+REM ---- 6. Install ComfyUI's other requirements (torch already covered) ----
 if "%SKIP_COMFY_DEPS%"=="1" (
-    echo [4/6] skipping ComfyUI requirements ^(already installed^)
+    echo [5/7] skipping ComfyUI requirements ^(already installed^)
 ) else (
-    echo [4/6] installing ComfyUI's requirements ^(this pulls torch — multi-GB^) ...
+    echo [5/7] installing ComfyUI's other requirements ...
     "%VENV_PY%" -m pip install -r "%COMFY_DIR%\requirements.txt"
     if errorlevel 1 (
         echo [install] ERROR: ComfyUI requirements install failed.
@@ -106,16 +128,16 @@ if "%SKIP_COMFY_DEPS%"=="1" (
     )
 )
 
-REM ---- 6. Install our extras (cuda-bindings, etc.) ----
-echo [5/6] installing comfyui-mesh server requirements ...
+REM ---- 7. Install our extras (cuda-bindings, etc.) ----
+echo [6/7] installing comfyui-mesh server requirements ...
 "%VENV_PY%" -m pip install -r "%~dp0requirements.txt"
 if errorlevel 1 (
     echo [install] ERROR: server requirements install failed.
     exit /b 1
 )
 
-REM ---- 7. Run the pre-flight check ----
-echo [6/6] running install_check.py ...
+REM ---- 8. Run the pre-flight check ----
+echo [7/7] running install_check.py ...
 echo.
 "%VENV_PY%" "%~dp0install_check.py"
 
