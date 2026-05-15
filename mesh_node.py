@@ -70,6 +70,62 @@ class MeshDecreaseNeedsReload(Exception):
     pass
 
 
+class MeshServerNeedsReconfigure(Exception):
+    """Raised when the client's n_blocks_remote disagrees with the
+    server's currently-running --n-blocks. The JS surfaces a Confirm
+    button that POSTs /mesh/reconfigure to apply the change; until
+    confirmed, KSampler is blocked here so the user can't produce
+    silently wrong output with a mismatched split."""
+    pass
+
+
+# ---------------------------------------------------------------------
+# HTTP route: /mesh/reconfigure
+#
+# The JS Confirm-restart button POSTs here with the node's current
+# (host, port, n_blocks). We connect to that mesh server, send a
+# reconfigure message, and return the result. The server execvs
+# itself with the new --n-blocks; subsequent generations reconnect
+# transparently and pick up the new server_n_blocks via the existing
+# hello handshake.
+# ---------------------------------------------------------------------
+
+try:
+    from server import PromptServer as _ComfyPromptServer
+    from aiohttp import web as _aiohttp_web
+    _HAS_COMFY_SERVER = True
+except ImportError:
+    _HAS_COMFY_SERVER = False
+
+if _HAS_COMFY_SERVER:
+    @_ComfyPromptServer.instance.routes.post("/mesh/reconfigure")
+    async def _mesh_reconfigure_route(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return _aiohttp_web.json_response({"error": "invalid JSON"}, status=400)
+        host = (data or {}).get("host", "").strip()
+        port = int((data or {}).get("port", 0) or 0)
+        n_blocks = int((data or {}).get("n_blocks", -1))
+        if not host or not (1 <= port <= 65535) or n_blocks < 0:
+            return _aiohttp_web.json_response(
+                {"error": "host, port, n_blocks required"}, status=400,
+            )
+        try:
+            client = _get_client(host, port)
+            client.reconfigure(n_blocks)
+            return _aiohttp_web.json_response({
+                "ok": True,
+                "host": host,
+                "port": port,
+                "n_blocks": n_blocks,
+            })
+        except Exception as e:
+            return _aiohttp_web.json_response(
+                {"error": f"reconfigure failed: {e}"}, status=500,
+            )
+
+
 def _send_node_message(node_id, level: str, text: str) -> None:
     """Send a `mesh-message` websocket event to ComfyUI's web UI. The
     bundled `web/mesh.js` extension picks it up and renders a banner
@@ -118,6 +174,11 @@ class MeshClient:
         # server, to avoid reshipping ~MB-sized LoRA payloads every
         # timestep when nothing changed.
         self._last_sent_lora_session: str = ""
+        # Server's currently-running --n-blocks, learned from the
+        # hello_ack handshake. Used to detect client/server drift
+        # so MeshSplitFlux.configure() can block the run with a
+        # 'Click Confirm to restart server' message.
+        self.server_n_blocks: int | None = None
 
     def _ensure_open(self) -> socket.socket:
         if self._sock is not None:
@@ -131,7 +192,14 @@ class MeshClient:
         header, _ = protocol.recv_message(s)
         if header.get("kind") != "hello_ack":
             raise RuntimeError(f"unexpected handshake response: {header!r}")
-        print(f"[mesh] connected to {self.host}:{self.port}; server reports {header.get('server_info', {})}")
+        server_info = header.get("server_info", {}) or {}
+        # Older servers may not include "n_blocks" — fall back to
+        # n_total_loaded which has always been there.
+        self.server_n_blocks = int(
+            server_info.get("n_blocks",
+                            server_info.get("n_total_loaded", 0)) or 0
+        )
+        print(f"[mesh] connected to {self.host}:{self.port}; server reports {server_info}")
         return s
 
     def close(self):
@@ -141,6 +209,38 @@ class MeshClient:
             except Exception:
                 pass
             self._sock = None
+
+    def reconfigure(self, new_n_blocks: int) -> None:
+        """Tell the server to re-exec with a different --n-blocks. Sends
+        the reconfigure message, waits for ack, then closes the socket.
+        The server will execv itself; subsequent calls reconnect via
+        the normal _ensure_open path and pick up the new server_n_blocks
+        from the fresh hello_ack."""
+        sock = self._ensure_open()
+        protocol.send_message(sock, {
+            "kind": "reconfigure",
+            "tensors": [],
+            "n_blocks": int(new_n_blocks),
+        }, [])
+        # Expect a single ack, then the socket dies as the server execvs.
+        try:
+            resp_header, _ = protocol.recv_message(sock)
+            if resp_header.get("kind") != "reconfigure_ack":
+                raise RuntimeError(
+                    f"server sent {resp_header.get('kind')!r} instead of "
+                    f"reconfigure_ack"
+                )
+        except (OSError, EOFError):
+            # Server closed before we read the ack — treat as success;
+            # _ensure_open will reconnect later and pick up the new state.
+            pass
+        # Drop the dead socket + reset LoRA-session bookkeeping (new
+        # server process has no memory of what we shipped).
+        self.close()
+        self._last_sent_lora_session = ""
+        # Optimistically record what we asked for; the next _ensure_open
+        # will overwrite this with whatever the new server actually reports.
+        self.server_n_blocks = int(new_n_blocks)
 
     def call_double_blocks(
         self,
@@ -727,6 +827,24 @@ class MeshSplitFlux:
         # at queue-time rather than mid-sample.
         client = _get_client(remote_host, remote_port)
         client._ensure_open()
+
+        # Block KSampler if the client's n_blocks_remote disagrees with
+        # the server's currently-running --n-blocks. The JS surfaces a
+        # 'Confirm: restart server with N=X' button that POSTs to
+        # /mesh/reconfigure; once the server execvs and re-handshakes,
+        # this check passes and the run proceeds. We only check when
+        # n_blocks_remote > 0 (n=0 means 'no mesh', client runs
+        # everything locally and the server isn't consulted).
+        if n_blocks_remote > 0 and client.server_n_blocks is not None:
+            if client.server_n_blocks != n_blocks_remote:
+                pending_msg = (
+                    f"n_blocks_remote ({n_blocks_remote}) differs from server "
+                    f"({client.server_n_blocks}). Click the Confirm button to "
+                    f"restart the server with n_blocks={n_blocks_remote}, "
+                    f"or set n_blocks_remote back to {client.server_n_blocks}."
+                )
+                _send_node_message(unique_id, "warn", pending_msg)
+                raise MeshServerNeedsReconfigure(pending_msg)
 
         # Capture vec_orig via a forward_pre_hook on the modulation module —
         # the server uses it to compute single-block modulation locally.

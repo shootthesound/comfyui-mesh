@@ -100,6 +100,137 @@ function _persistLastUsed(node) {
     _saveLastUsed(_captureNodeValues(node));
 }
 
+// =====================================================================
+// Confirm-restart button: shown when n_blocks_remote drifts from its
+// baseline (the value at last node load or last successful reconfigure).
+// Click POSTs to /mesh/reconfigure, which causes the server to execv
+// itself with the new --n-blocks and the client to transparently
+// reconnect to the freshly-restarted process.
+// =====================================================================
+
+function _checkPendingState(node) {
+    if (!node) return;
+    const nbW = node.widgets?.find((w) => w.name === "n_blocks_remote");
+    const baseline = node._mesh_baseline_n_blocks;
+    const target = nbW?.value;
+    const isPending =
+        nbW != null && baseline != null && target != null && target !== baseline;
+    const btn = node._mesh_confirm_btn;
+    if (btn) {
+        btn._mesh_visible = isPending;
+        btn._mesh_target = target;
+        // Hidden/visible changes the widget's reported height, so a
+        // resize is needed to make the layout re-flow.
+        const computed = node.computeSize();
+        node.setSize([Math.max(node.size[0], computed[0]), computed[1]]);
+    }
+    node.setDirtyCanvas(true, true);
+}
+
+function _onValueChange(node, widget) {
+    _persistLastUsed(node);
+    if (widget && widget.name === "n_blocks_remote") {
+        _checkPendingState(node);
+    }
+}
+
+function createConfirmButton(node) {
+    // Pushed to the END of node.widgets so it never participates in
+    // positional widgets_values serialization (serialize:false too,
+    // for triple-safety). Hidden by default — computeSize returns a
+    // zero-ish height when _mesh_visible is false, so the slot
+    // collapses cleanly.
+    const widget = {
+        type: "MESH_CONFIRM_BTN",
+        name: "_mesh_confirm",
+        value: null,
+        options: {},
+        serialize: false,
+        _mesh_role: "confirm_btn",
+        _mesh_visible: false,
+        _mesh_target: null,
+        _mesh_in_flight: false,
+
+        draw(ctx, n, ww, y) {
+            if (!this._mesh_visible) return;
+            const W = n.size[0];
+            const h = SLOT_H;
+            const padX = MESH_PILL_PAD;
+            const inFlight = this._mesh_in_flight;
+
+            ctx.fillStyle = inFlight ? "#665030" : "#a06530";
+            ctx.fillRect(padX, y + 2, W - padX * 2, h - 4);
+            ctx.strokeStyle = "#c08850";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(padX + 0.5, y + 2.5, W - padX * 2 - 1, h - 5);
+
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 12px Segoe UI, Arial";
+            ctx.textBaseline = "middle";
+            ctx.textAlign = "center";
+            const target = this._mesh_target ?? "?";
+            const label = inFlight
+                ? `Restarting server with n_blocks=${target}…`
+                : `✓ Confirm: restart server with n_blocks=${target}`;
+            ctx.fillText(label, W / 2, y + h / 2);
+        },
+
+        computeSize() {
+            return this._mesh_visible ? [0, SLOT_H] : [0, -4];
+        },
+
+        mouse(event, pos, n) {
+            if (!this._mesh_visible || this._mesh_in_flight) return false;
+            if (event.type !== "pointerdown" && event.type !== "mousedown") return false;
+
+            const hostW = n.widgets.find((w) => w.name === "remote_host");
+            const portW = n.widgets.find((w) => w.name === "remote_port");
+            const nbW   = n.widgets.find((w) => w.name === "n_blocks_remote");
+            if (!hostW || !portW || !nbW) return true;
+
+            this._mesh_in_flight = true;
+            n.setDirtyCanvas(true, true);
+
+            fetch("/mesh/reconfigure", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    host: String(hostW.value || ""),
+                    port: parseInt(portW.value, 10) || 0,
+                    n_blocks: parseInt(nbW.value, 10) || 0,
+                }),
+            }).then(async (resp) => {
+                this._mesh_in_flight = false;
+                if (resp.ok) {
+                    // Reconfigure succeeded — update baseline and clear
+                    // any pending banner, and hide ourselves.
+                    n._mesh_baseline_n_blocks = nbW.value;
+                    this._mesh_visible = false;
+                    delete n._mesh_message_text;
+                    delete n._mesh_message_level;
+                } else {
+                    let detail = "";
+                    try { detail = (await resp.json())?.error || ""; } catch (e) {}
+                    n._mesh_message_text =
+                        `Reconfigure failed: ${detail || resp.statusText || resp.status}`;
+                    n._mesh_message_level = "warn";
+                }
+                const computed = n.computeSize();
+                n.setSize([Math.max(n.size[0], computed[0]), computed[1]]);
+                n.setDirtyCanvas(true, true);
+            }).catch((err) => {
+                this._mesh_in_flight = false;
+                n._mesh_message_text = `Reconfigure call failed: ${err}`;
+                n._mesh_message_level = "warn";
+                n.setDirtyCanvas(true, true);
+            });
+            return true;
+        },
+    };
+    node.widgets.push(widget);
+    return widget;
+}
+
 const PILL_COLORS = {
     body:    "#1f1f1f",
     border:  "#555",
@@ -391,13 +522,13 @@ function createPillNumber(node, name, opts = {}) {
                     if (onLeft) {
                         this._setValue(this.value - this.options.step);
                         n.setDirtyCanvas(true, true);
-                        _persistLastUsed(n);
+                        _onValueChange(n, this);
                         return true;
                     }
                     if (onRight) {
                         this._setValue(this.value + this.options.step);
                         n.setDirtyCanvas(true, true);
-                        _persistLastUsed(n);
+                        _onValueChange(n, this);
                         return true;
                     }
                     if (event.detail === 2) {
@@ -409,7 +540,7 @@ function createPillNumber(node, name, opts = {}) {
                             if (!isNaN(parsed)) {
                                 this._setValue(parsed);
                                 n.setDirtyCanvas(true, true);
-                                _persistLastUsed(n);
+                                _onValueChange(n, this);
                             }
                         }
                         this._mesh_drag = null;
@@ -431,7 +562,7 @@ function createPillNumber(node, name, opts = {}) {
                 if (event.type === "pointerup" || event.type === "mouseup") {
                     if (this._mesh_drag) {
                         this._mesh_drag = null;
-                        _persistLastUsed(n);  // commit drag-final value
+                        _onValueChange(n, this);
                         return true;
                     }
                 }
@@ -496,7 +627,7 @@ function createPillCombo(node, name, opts = {}) {
                             try { origCallback.call(this, v); } catch (e) { /* noop */ }
                         }
                         n.setDirtyCanvas(true, true);
-                        _persistLastUsed(n);
+                        _onValueChange(n, this);
                     },
                 });
                 return true;
@@ -721,6 +852,15 @@ function setupMeshSplitFlux(node) {
         }
     }
 
+    // Snapshot n_blocks_remote AFTER last-used has been applied. This
+    // is the baseline the Confirm button compares against. onConfigure
+    // (workflow load) refreshes it later if a saved value gets restored.
+    const nbW = node.widgets.find((w) => w.name === "n_blocks_remote");
+    node._mesh_baseline_n_blocks = nbW ? nbW.value : null;
+
+    // Confirm-restart button (hidden by default).
+    node._mesh_confirm_btn = createConfirmButton(node);
+
     // Default width for freshly-dropped nodes. computeSize() (overridden
     // below in beforeRegisterNodeDef) already enforces MESH_NODE_MIN_W
     // as a floor, so the Math.max here is belt-and-braces.
@@ -800,16 +940,28 @@ app.registerExtension({
             return [Math.max(sz[0], MESH_NODE_MIN_W), sz[1]];
         };
 
-        // Workflow-load path: ComfyUI restores node.size from the saved
-        // JSON AFTER onNodeCreated. If the saved size predates pill
-        // widgets (or the user manually shrank the node), the restored
-        // width can leave the pills clipped. Bump up to the minimum
-        // here so loaded workflows look right too.
+        // Workflow-load path: ComfyUI restores node.size + widgets_values
+        // from the saved JSON AFTER onNodeCreated. If the saved size
+        // predates pill widgets (or the user manually shrank the node),
+        // the restored width can leave the pills clipped. Bump up to
+        // the minimum here so loaded workflows look right too.
+        //
+        // Also: snapshot the loaded n_blocks_remote as the Confirm
+        // button's baseline — anything saved IS the in-sync state by
+        // definition, so the button should be hidden until the user
+        // changes it.
         const orig_onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             const result = orig_onConfigure?.apply(this, arguments);
             if (this.size && this.size[0] < MESH_NODE_MIN_W) {
                 this.setSize([MESH_NODE_MIN_W, this.size[1]]);
+            }
+            const nbW = this.widgets?.find((w) => w.name === "n_blocks_remote");
+            if (nbW) {
+                this._mesh_baseline_n_blocks = nbW.value;
+            }
+            if (this._mesh_confirm_btn) {
+                this._mesh_confirm_btn._mesh_visible = false;
             }
             return result;
         };

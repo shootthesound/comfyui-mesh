@@ -567,8 +567,50 @@ def serve(patcher, host: str, port: int, device: torch.device,
                             "n_double_blocks": n_double_blocks,
                             "n_single_blocks": n_single_blocks,
                             "n_total_loaded": n_total_loaded,
+                            # The client uses this to detect when its
+                            # n_blocks_remote setting drifts from what
+                            # the server is actually running; the JS
+                            # surfaces a Confirm-restart button on
+                            # mismatch and POSTs /mesh/reconfigure to
+                            # trigger the kind below.
+                            "n_blocks": n_total_loaded,
                         },
                     }, [])
+
+                elif kind == "reconfigure":
+                    # Client wants the server to relaunch with a different
+                    # --n-blocks. ACK first so the client knows we got it
+                    # and can expect the socket to drop, then re-exec.
+                    new_n_blocks = int(header.get("n_blocks", n_total_loaded))
+                    print(f"[server] reconfigure request: --n-blocks "
+                          f"{n_total_loaded} -> {new_n_blocks}")
+                    protocol.send_message(conn, {
+                        "kind": "reconfigure_ack",
+                        "tensors": [],
+                        "new_n_blocks": new_n_blocks,
+                    }, [])
+                    # Close sockets so the new process can re-bind the port.
+                    try: conn.close()
+                    except Exception: pass
+                    try: s.close()
+                    except Exception: pass
+                    # Rebuild argv with the new --n-blocks value.
+                    new_argv = list(sys.argv)
+                    if "--n-blocks" in new_argv:
+                        idx = new_argv.index("--n-blocks")
+                        if idx + 1 < len(new_argv):
+                            new_argv[idx + 1] = str(new_n_blocks)
+                        else:
+                            new_argv.append(str(new_n_blocks))
+                    else:
+                        new_argv.extend(["--n-blocks", str(new_n_blocks)])
+                    print(f"[server] re-exec: {sys.executable} {' '.join(new_argv)}")
+                    sys.stdout.flush()
+                    os.execv(sys.executable, [sys.executable] + new_argv)
+                    # execv replaces the current process image; control
+                    # does not return. Fallthrough below is defensive
+                    # only — if execv somehow fails, exit cleanly.
+                    sys.exit(0)
 
                 elif kind == "forward_double_blocks":
                     # start_block in the request is informational only — the
