@@ -792,7 +792,7 @@ class MeshSplitFlux:
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535}),
                 "codec_mode": (["raw", "nvenc"], {"default": "nvenc"}),
                 "codec_qp": ("INT", {"default": 18, "min": 0, "max": 51,
-                                     "tooltip": "Lower = higher quality / less compression. 10=near-lossless, 18=standard, 28=high-compression (FLUX absorbs it fine; only a slight softness vs QP=18)."}),
+                                     "tooltip": "Lower = higher quality / less compression. 10 = near-lossless. 18 = sharp (default). Towards 28 the image gets noticeably softer with visible noise."}),
                 "codec_lossless": ("BOOLEAN", {"default": False,
                                                "tooltip": "Use NVENC's lossless tuning (overrides QP, much larger bitstream)."}),
                 "codec_tile_dim": ([1, 2, 4, 8], {"default": 4,
