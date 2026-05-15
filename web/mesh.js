@@ -610,7 +610,7 @@ function createMeshButton(node, role, label, onClick) {
 //   1. New-node default width (in setupMeshSplitFlux)
 //   2. Hard minimum on the node prototype's computeSize (so loaded
 //      workflows that saved a narrower size get bumped up too)
-const MESH_NODE_MIN_W = 380;
+const MESH_NODE_MIN_W = 410;
 
 function setupMeshSplitFlux(node) {
     createPillNumber(node, "n_blocks_remote", { label: "n_blocks_remote", integer: true });
