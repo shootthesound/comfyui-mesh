@@ -4,14 +4,22 @@ Companion to the `comfyui-mesh` ComfyUI custom node (`../README.md`).
 This folder gets deployed to whichever host holds the back-half GPU —
 a second machine on the LAN/Tailscale, or a second card in the same
 desktop. It runs a long-lived TCP server: per request, it takes
-activations from the front half of FLUX's double-block stack, runs the
-remaining double-blocks through its slim-loaded weights, and ships the
-result back over the wire.
+activations from the front half of FLUX's transformer block stack,
+runs the remaining doubles + singles through its slim-loaded weights,
+and ships the result back over the wire (NVENC-compressed).
 
-The headline architectural property: **the server slim-loads only the
-blocks it needs**. For FLUX.2 Klein 9B at `n_blocks=4`, only ~2.2 GB
-is read from disk and held in VRAM — not the full 9.4 GB. This is the
-load-bearing property for models too big to fit on either device whole.
+Two headline architectural properties:
+
+1. **Slim-load.** Server reads ONLY the blocks it needs from disk. For
+   FLUX.2 Klein 9B at `n_blocks=4`: ~2.2 GB instead of 9.4 GB. For
+   FLUX.2 dev at `n_blocks=12`: ~6 GB instead of ~22 GB. For models
+   too big to fit on either device whole, this is the load-bearing
+   property.
+2. **LoRA support, both ways.** Pick a LoRA at startup (GUI or CLI) +
+   accept any LoRA the client forwards over the wire (ComfyUI's
+   standard LoraLoader output, serialized via safetensors). Both
+   stack. Covers lora / loha / lokr / glora / oft / boft plus the
+   `diff` and `set` patch types.
 
 ---
 
@@ -25,9 +33,10 @@ server/
 ├── requirements.txt            ← what install.bat installs (also for manual use)
 ├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
 ├── mesh_server_gui.py          ← Tkinter wrapper — pick file, set n_blocks, click Start.
-├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
+├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC + tile_dim)
 ├── protocol.py                 ← length-prefixed TCP framing
 ├── vec_io.py                   ← FLUX.2 vec/modulation tuple (de)serializer
+├── lora_io.py                  ← safetensors-based LoRA patch shipping
 ├── nvenc_pframe/               ← BUNDLED codec source (no separate install)
 │   └── direct/...              ←   compiles its C helper on first import
 ├── smoke_test_server.py        ← validates model load + back-half forward
@@ -39,9 +48,9 @@ server/
 └── run_server_cpu.bat          ← CPU / system-RAM mode (slow; raw codec only)
 ```
 
-Files in `codec.py / protocol.py / vec_io.py / nvenc_pframe/` MUST stay
-byte-identical to the client-side copies. They're the wire contract —
-drift = silent corruption.
+Files in `codec.py / protocol.py / vec_io.py / lora_io.py / nvenc_pframe/`
+MUST stay byte-identical to the client-side copies. They're the wire
+contract — drift = silent corruption.
 
 ---
 
@@ -135,13 +144,17 @@ run_server_gui.bat
 Opens a Tkinter window with:
 
 - **Model:** file picker. Picks the safetensors.
-- **n_blocks:** spinbox. Auto-bounds its max to whatever the checkpoint
-  actually has (e.g. 8 for FLUX.2 Klein 9B). `0` = full model.
+- **n_blocks:** spinbox. Auto-bounds its max to (n_double + n_single)
+  for the loaded checkpoint. FLUX.2 Klein 9B → 32 max. FLUX.2 dev → 56
+  max. `0` = full model.
 - **Port / Bind:** defaults 7777 / 0.0.0.0.
 - **Device:** dropdown listing nvidia-smi-detected GPUs + "cpu". Sets
   `CUDA_VISIBLE_DEVICES` on the subprocess.
 - **dtype:** bfloat16 / float16 / float32. Leave on bfloat16 unless you
   know why you're changing it.
+- **LoRA:** optional file picker + strength spinbox. Applied to the
+  slim-loaded model at startup. Stacks with any LoRA the client
+  forwards.
 - **Start Server / Stop:** subprocess lifecycle. Live stdout streams
   into the text area below.
 
