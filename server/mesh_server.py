@@ -477,16 +477,41 @@ def _apply_client_lora(patcher, blob: bytes, session_id: str, device: torch.devi
     """Apply a client-shipped LoRA bundle to the patcher. Forces a
     re-stage so patches actually fold into the loaded weights (rather
     than ComfyUI's lazy cast-time application). Returns the count of
-    patches applied."""
+    patch entries appended.
+
+    NOTE: we write directly to `patcher.patches` rather than using
+    `add_patches`. add_patches wraps `patches[k]` inside the 5-tuple
+    `(strength, data, strength_model, offset, function)` itself —
+    but our decoded entries are ALREADY full 5-tuples in ComfyUI's
+    internal format (strengths, offsets, etc baked in via
+    decode_patches_from_safetensors). Going through add_patches
+    would double-wrap and break calculate_weight.
+    """
+    import uuid
     import comfy.model_management
     patches = lora_io.decode_patches_from_safetensors(blob, device=device)
     n_keys = len(patches)
     n_entries = sum(len(v) for v in patches.values())
-    accepted = patcher.add_patches(patches, 1.0)  # strengths baked in
-    print(f"[server] client LoRA: applied {len(accepted)} patches "
-          f"({n_keys} keys, {n_entries} entries) — session={session_id}")
+
+    model_sd = patcher.model.state_dict()
+    n_attached = 0
+    n_missing = 0
+    for key, entries in patches.items():
+        if key not in model_sd:
+            n_missing += 1
+            continue
+        existing = patcher.patches.get(key, [])
+        existing.extend(entries)
+        patcher.patches[key] = existing
+        n_attached += len(entries)
+    if n_keys > 0:
+        patcher.patches_uuid = uuid.uuid4()  # invalidate ComfyUI's cache
+
+    print(f"[server] client LoRA: attached {n_attached} entries across "
+          f"{n_keys - n_missing} keys (skipped {n_missing} missing-from-slim) — "
+          f"session={session_id}")
     comfy.model_management.load_models_gpu([patcher], force_full_load=True)
-    return len(accepted)
+    return n_attached
 
 
 def _unapply_client_lora(patcher):
