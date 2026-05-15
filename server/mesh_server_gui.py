@@ -46,6 +46,128 @@ STARTUP_LOG = HERE / "mesh_server_gui_startup.log"
 READY_SENTINEL = HERE / "mesh_server_gui_ready.tmp"
 
 
+# =====================================================================
+# Dark theme — matches the comfyui-mesh node's pill widget palette so
+# the server GUI feels like a continuation of the same rig.
+# =====================================================================
+
+THEME = {
+    "bg":          "#2a2a2a",  # window / frame background
+    "field_bg":    "#1a1a1a",  # entry / spinbox / log / combobox text area
+    "fg":          "#dddddd",  # primary text
+    "fg_dim":      "#888888",  # secondary / hint text
+    "border":      "#555555",
+    "btn_bg":      "#363636",
+    "btn_fg":      "#dddddd",
+    "btn_active":  "#444444",
+    "accent_run":  "#3bb04c",  # status: server running (matches node-side green)
+    "accent_warn": "#c4892a",  # restart-required text
+    "accent_err":  "#c43030",  # error
+}
+
+
+def _apply_dark_theme(root: Tk) -> None:
+    """Set up ttk styling + Tk option_db so every widget we create
+    in _build_ui inherits the dark palette without per-widget plumbing.
+
+    The native Windows ttk theme ('vista' / 'winnative') ignores most
+    color overrides; 'clam' is the most paint-friendly built-in theme
+    and lets us fully control colors. Some widgets (the Combobox
+    dropdown listbox) aren't ttk and need root.option_add to be styled.
+    """
+    root.configure(bg=THEME["bg"])
+
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+
+    # ttk.Combobox — both readonly and active states.
+    style.configure(
+        "TCombobox",
+        fieldbackground=THEME["field_bg"],
+        background=THEME["btn_bg"],
+        foreground=THEME["fg"],
+        arrowcolor=THEME["fg"],
+        bordercolor=THEME["border"],
+        lightcolor=THEME["border"],
+        darkcolor=THEME["border"],
+        selectbackground=THEME["btn_active"],
+        selectforeground=THEME["fg"],
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", THEME["field_bg"])],
+        foreground=[("readonly", THEME["fg"])],
+        selectbackground=[("readonly", THEME["btn_active"])],
+        selectforeground=[("readonly", THEME["fg"])],
+        background=[("active", THEME["btn_active"])],
+    )
+
+    # Combobox dropdown listbox — separate underlying tk widget; styled
+    # via the option database rather than ttk.Style.
+    root.option_add("*TCombobox*Listbox.background", THEME["field_bg"])
+    root.option_add("*TCombobox*Listbox.foreground", THEME["fg"])
+    root.option_add("*TCombobox*Listbox.selectBackground", THEME["btn_active"])
+    root.option_add("*TCombobox*Listbox.selectForeground", THEME["fg"])
+    root.option_add("*TCombobox*Listbox.borderWidth", 0)
+
+    # ttk.Spinbox.
+    style.configure(
+        "TSpinbox",
+        fieldbackground=THEME["field_bg"],
+        background=THEME["btn_bg"],
+        foreground=THEME["fg"],
+        arrowcolor=THEME["fg"],
+        bordercolor=THEME["border"],
+        lightcolor=THEME["border"],
+        darkcolor=THEME["border"],
+        insertcolor=THEME["fg"],
+    )
+    style.map(
+        "TSpinbox",
+        fieldbackground=[("readonly", THEME["field_bg"])],
+        background=[("active", THEME["btn_active"])],
+    )
+
+
+# Default kwargs for the tk-classic widgets so we don't have to repeat
+# the palette at every construction site. Each helper just merges the
+# theme defaults under whatever the caller passes.
+
+def _Label(parent, **kw):
+    kw.setdefault("bg", THEME["bg"])
+    kw.setdefault("fg", THEME["fg"])
+    return Label(parent, **kw)
+
+def _Frame(parent, **kw):
+    kw.setdefault("bg", THEME["bg"])
+    return Frame(parent, **kw)
+
+def _Entry(parent, **kw):
+    kw.setdefault("bg", THEME["field_bg"])
+    kw.setdefault("fg", THEME["fg"])
+    kw.setdefault("insertbackground", THEME["fg"])
+    kw.setdefault("relief", "flat")
+    kw.setdefault("borderwidth", 1)
+    kw.setdefault("highlightthickness", 1)
+    kw.setdefault("highlightbackground", THEME["border"])
+    kw.setdefault("highlightcolor", THEME["border"])
+    return Entry(parent, **kw)
+
+def _Button(parent, **kw):
+    kw.setdefault("bg", THEME["btn_bg"])
+    kw.setdefault("fg", THEME["btn_fg"])
+    kw.setdefault("activebackground", THEME["btn_active"])
+    kw.setdefault("activeforeground", THEME["fg"])
+    kw.setdefault("disabledforeground", THEME["fg_dim"])
+    kw.setdefault("relief", "flat")
+    kw.setdefault("borderwidth", 1)
+    kw.setdefault("highlightthickness", 0)
+    return Button(parent, **kw)
+
+
 def _signal_ready() -> None:
     """Drop the ready sentinel file the launcher splash polls for.
     Called once the main Tk window is actually painted so the splash
@@ -212,6 +334,7 @@ class MeshServerGUI:
         self.root = root
         root.title("comfyui-mesh — back-half server")
         root.geometry("780x560")
+        _apply_dark_theme(root)
 
         self.proc: subprocess.Popen | None = None
         self.output_q: queue.Queue = queue.Queue()
@@ -249,40 +372,40 @@ class MeshServerGUI:
         s = self.settings
 
         # Row: weights file picker
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="Model:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="Model:", width=12, anchor="w").pack(side=LEFT)
         self.weights_var = StringVar(value=s.get("weights", ""))
-        self.weights_entry = Entry(row, textvariable=self.weights_var)
+        self.weights_entry = _Entry(row, textvariable=self.weights_var)
         self.weights_entry.pack(side=LEFT, fill=X, expand=True, padx=4)
-        Button(row, text="Browse…", command=self._on_browse).pack(side=LEFT)
+        _Button(row, text="Browse…", command=self._on_browse).pack(side=LEFT)
 
         # Row: n_blocks
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="n_blocks:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="n_blocks:", width=12, anchor="w").pack(side=LEFT)
         self.n_blocks_var = IntVar(value=int(s.get("n_blocks", 4)))
         self.n_blocks_spin = ttk.Spinbox(
             row, from_=0, to=999, increment=1, textvariable=self.n_blocks_var, width=8,
         )
         self.n_blocks_spin.pack(side=LEFT)
-        self.n_blocks_info = Label(row, text="(0 = full model)", anchor="w", fg="#666")
+        self.n_blocks_info = _Label(row, text="(0 = full model)", anchor="w", fg=THEME["fg_dim"])
         self.n_blocks_info.pack(side=LEFT, padx=8)
 
         # Row: port
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="Port:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="Port:", width=12, anchor="w").pack(side=LEFT)
         self.port_var = IntVar(value=int(s.get("port", 7777)))
         ttk.Spinbox(row, from_=1, to=65535, increment=1, textvariable=self.port_var, width=8).pack(side=LEFT)
         self.bind_var = StringVar(value=s.get("bind", "0.0.0.0"))
-        Label(row, text="  Bind:", anchor="w").pack(side=LEFT, padx=(16, 4))
-        Entry(row, textvariable=self.bind_var, width=18).pack(side=LEFT)
+        _Label(row, text="  Bind:", anchor="w").pack(side=LEFT, padx=(16, 4))
+        _Entry(row, textvariable=self.bind_var, width=18).pack(side=LEFT)
 
         # Row: device + dtype
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="Device:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="Device:", width=12, anchor="w").pack(side=LEFT)
         self.device_var = StringVar()
         # nvidia-smi cold start blocks 1-3s on Windows; populate async so the window paints first.
         self.device_combo = ttk.Combobox(
@@ -293,63 +416,71 @@ class MeshServerGUI:
         self.device_combo.pack(side=LEFT)
         self._populate_devices_async()
 
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="dtype:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="dtype:", width=12, anchor="w").pack(side=LEFT)
         self.dtype_var = StringVar(value=s.get("dtype", "bfloat16"))
         ttk.Combobox(
             row, textvariable=self.dtype_var,
             values=["bfloat16", "float16", "float32"], state="readonly", width=18,
         ).pack(side=LEFT)
-        Label(row, text="(leave on bfloat16 unless you know why you're changing it)",
-              fg="#666", anchor="w").pack(side=LEFT, padx=8)
+        _Label(row, text="(leave on bfloat16 unless you know why you're changing it)",
+              fg=THEME["fg_dim"], anchor="w").pack(side=LEFT, padx=8)
 
         # Row: ComfyUI path (read-only display; sourced from env / probed)
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="ComfyUI:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="ComfyUI:", width=12, anchor="w").pack(side=LEFT)
         comfy_path = find_comfyui_path() or "(not found — set COMFYUI_PATH before launching)"
-        Label(row, text=comfy_path, fg="#666", anchor="w").pack(side=LEFT, fill=X, expand=True)
+        _Label(row, text=comfy_path, fg=THEME["fg_dim"], anchor="w").pack(side=LEFT, fill=X, expand=True)
 
         # Row: optional LoRA file picker + strength
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="LoRA:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="LoRA:", width=12, anchor="w").pack(side=LEFT)
         self.lora_var = StringVar(value=s.get("lora", ""))
-        Entry(row, textvariable=self.lora_var).pack(side=LEFT, fill=X, expand=True, padx=4)
-        Button(row, text="Browse…", command=self._on_browse_lora).pack(side=LEFT)
-        Button(row, text="Clear", command=lambda: self.lora_var.set("")).pack(side=LEFT, padx=4)
+        _Entry(row, textvariable=self.lora_var).pack(side=LEFT, fill=X, expand=True, padx=4)
+        _Button(row, text="Browse…", command=self._on_browse_lora).pack(side=LEFT)
+        _Button(row, text="Clear", command=lambda: self.lora_var.set("")).pack(side=LEFT, padx=4)
 
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, **pad)
-        Label(row, text="LoRA strength:", width=12, anchor="w").pack(side=LEFT)
+        _Label(row, text="LoRA strength:", width=12, anchor="w").pack(side=LEFT)
         self.lora_strength_var = StringVar(value=s.get("lora_strength", "1.0"))
         ttk.Spinbox(
             row, from_=-2.0, to=2.0, increment=0.1,
             textvariable=self.lora_strength_var, width=8,
         ).pack(side=LEFT)
-        Label(row, text="(only applies to layers this server holds — front-half + tail singles ignored)",
-              fg="#666", anchor="w").pack(side=LEFT, padx=8)
+        _Label(row, text="(only applies to layers this server holds — front-half + tail singles ignored)",
+              fg=THEME["fg_dim"], anchor="w").pack(side=LEFT, padx=8)
 
         # Row: start/stop + status
-        row = Frame(self.root)
+        row = _Frame(self.root)
         row.pack(fill=X, padx=8, pady=10)
         # Start/Restart button — width is adjusted at state-flip time
         # so the longer "Restart server to apply new settings" text
         # fits readably without permanently bloating the idle button.
-        self.start_btn = Button(
+        self.start_btn = _Button(
             row, text="Start Server", command=self._on_start,
             width=16, font=("Segoe UI", 9),
         )
         self.start_btn.pack(side=LEFT)
-        self.stop_btn = Button(row, text="Stop", command=self._on_stop, width=8, state=DISABLED)
+        self.stop_btn = _Button(row, text="Stop", command=self._on_stop, width=8, state=DISABLED)
         self.stop_btn.pack(side=LEFT, padx=4)
-        self.status_label = Label(row, text="idle", fg="#666", anchor="w")
+        self.status_label = _Label(row, text="idle", fg=THEME["fg_dim"], anchor="w")
         self.status_label.pack(side=LEFT, padx=12)
-        Button(row, text="Clear log", command=self._clear_log).pack(side=RIGHT)
+        _Button(row, text="Clear log", command=self._clear_log).pack(side=RIGHT)
 
         # Log output
-        self.log = ScrolledText(self.root, wrap="word", font=("Consolas", 9), height=18)
+        self.log = ScrolledText(
+            self.root, wrap="word", font=("Consolas", 9), height=18,
+            bg=THEME["field_bg"], fg=THEME["fg"],
+            insertbackground=THEME["fg"],
+            relief="flat", borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=THEME["border"],
+            highlightcolor=THEME["border"],
+        )
         self.log.pack(fill=BOTH, expand=True, padx=8, pady=(0, 8))
         self.log.configure(state=DISABLED)
 
@@ -616,7 +747,7 @@ class MeshServerGUI:
             width=16, font=("Segoe UI", 9),
         )
         self.stop_btn.config(state=NORMAL)
-        self.status_label.config(text=f"running (pid {self.proc.pid})", fg="#080")
+        self.status_label.config(text=f"running (pid {self.proc.pid})", fg=THEME["accent_run"])
 
     def _on_stop(self):
         if self.proc is None:
@@ -646,7 +777,7 @@ class MeshServerGUI:
             width=16, font=("Segoe UI", 9),
         )
         self.stop_btn.config(state=DISABLED)
-        self.status_label.config(text="idle", fg="#666")
+        self.status_label.config(text="idle", fg=THEME["fg_dim"])
 
         # If the server exited because it received a `reconfigure`
         # message from the client, it left a small handoff file
