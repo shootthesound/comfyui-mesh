@@ -100,7 +100,7 @@ between the two ends is the most likely silent-correctness bug.
 ### Drop the model weights here
 
 ```
-flux-2-klein-9b-fp8.safetensors   ← 9.4 GB
+flux-2-klein-9b-fp8.safetensors   ← 9.4 GB and/or flux2_dev_fp8mixed.safetensors
 ```
 
 Or point the launcher at wherever you keep your checkpoints.
