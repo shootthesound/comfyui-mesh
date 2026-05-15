@@ -127,6 +127,27 @@ if _HAS_COMFY_SERVER:
             return _aiohttp_web.json_response({
                 "state": "idle", "host": host, "port": port,
             })
+
+        # If the cached client's socket is dead, try to reconnect now.
+        # This is what lets the indicator auto-flip back to green when
+        # the server returns from a restart / reconfigure / crash —
+        # without the user having to queue a workflow first to trigger
+        # _ensure_open. The in-flight guard keeps repeated 3s polls
+        # from stacking up while the server is genuinely down.
+        if client._sock is None and not client._probe_in_flight:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                # 6s budget — slightly more than the socket connect
+                # timeout in _ensure_open, so we don't cut off a
+                # successful handshake.
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, client.try_reconnect),
+                    timeout=6.0,
+                )
+            except (asyncio.TimeoutError, Exception):
+                pass
+
         return _aiohttp_web.json_response({
             "state": "connected" if client._sock is not None else "disconnected",
             "host": host, "port": port,
@@ -200,17 +221,27 @@ class MeshClient:
         # so MeshSplitFlux.configure() can block the run with a
         # 'Click Confirm to restart server' message.
         self.server_n_blocks: int | None = None
+        # Set while a status-driven reconnect probe is in flight, so
+        # we don't stack multiple probe threads when the server is
+        # down for many polling intervals.
+        self._probe_in_flight: bool = False
 
     def _ensure_open(self) -> socket.socket:
         if self._sock is not None:
             return self._sock
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        # 5s connect timeout so probe-driven reconnects fail quickly
+        # against an absent server (otherwise OS default can be ~60s).
+        # Reverted to blocking after handshake — workflow recvs are
+        # long-lived and shouldn't time out.
+        s.settimeout(5.0)
         s.connect((self.host, self.port))
         self._sock = s
         # Handshake
         protocol.send_message(s, {"kind": "hello", "tensors": []}, [])
         header, _ = protocol.recv_message(s)
+        s.settimeout(None)
         if header.get("kind") != "hello_ack":
             raise RuntimeError(f"unexpected handshake response: {header!r}")
         server_info = header.get("server_info", {}) or {}
@@ -230,6 +261,25 @@ class MeshClient:
             except Exception:
                 pass
             self._sock = None
+
+    def try_reconnect(self) -> bool:
+        """Best-effort reconnect attempt for the status indicator's
+        sake. Quick TCP-level fail if the server is down (5s connect
+        timeout in _ensure_open); full handshake if it's up. The
+        in-flight guard prevents repeated polls (every 3s) from
+        stacking probe threads while the server is genuinely down."""
+        if self._sock is not None:
+            return True
+        if self._probe_in_flight:
+            return False
+        self._probe_in_flight = True
+        try:
+            self._ensure_open()
+            return True
+        except Exception:
+            return False
+        finally:
+            self._probe_in_flight = False
 
     def reconfigure(self, new_n_blocks: int) -> None:
         """Tell the server to re-exec with a different --n-blocks. Sends
