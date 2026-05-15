@@ -51,6 +51,47 @@ def _align_up(x: int) -> int:
     return ((target + HEVC_ALIGN - 1) // HEVC_ALIGN) * HEVC_ALIGN
 
 
+# Persistent DirectBackend cache, keyed by (height, width, qp, lossless).
+# Constructing a DirectBackend invokes nvEncOpenEncodeSessionEx +
+# nvEncInitializeEncoder + buffer allocation — measured at ~300-500ms
+# per call. The hot path on a real workflow only ever uses 1-2 distinct
+# configs (one for img encode at the chosen QP), so caching turns N
+# misses into N-1 hits and saves multiple hundreds of ms per timestep.
+#
+# We deliberately never close() these. Process exit reclaims them. Long-
+# running server / client processes hold them for the process lifetime.
+_BACKEND_CACHE: dict = {}
+
+
+def _get_or_create_backend(height: int, width: int, qp: int = 0, lossless: bool = False):
+    """Return a cached DirectBackend for the given config, creating one
+    if needed. Caller MUST NOT close() the returned backend."""
+    from nvenc_pframe.direct.backend import DirectBackend  # type: ignore
+
+    key = (int(height), int(width), int(qp), bool(lossless))
+    backend = _BACKEND_CACHE.get(key)
+    if backend is None:
+        backend = DirectBackend(
+            height=height, width=width,
+            qp=qp, lossless=lossless,
+        )
+        _BACKEND_CACHE[key] = backend
+    return backend
+
+
+def _get_decode_backend(height: int, width: int):
+    """Decode-side lookup. The decoder doesn't care about qp/lossless
+    (it just consumes the bitstream), so any cached backend with matching
+    (height, width) works. Falls back to creating one with default config
+    if no existing backend matches."""
+    height = int(height)
+    width = int(width)
+    for (h, w, _qp, _ll), backend in _BACKEND_CACHE.items():
+        if h == height and w == width:
+            return backend
+    return _get_or_create_backend(height, width, qp=0, lossless=False)
+
+
 @dataclass
 class WireTensor:
     """Result of encoding a tensor for the wire."""
@@ -215,32 +256,38 @@ def encode_nvenc(
     var_mins = mins.tolist()
     var_maxs = maxs.tolist()
 
-    # Group channels into triplets, pad spatial dims to NVENC alignment
+    # Group channels into triplets, pad spatial dims to NVENC alignment.
+    # u8 is [n_channels, h_data, w_data]. Reshape to [n_triplets, 3, h_data, w_data]
+    # then pad spatially. Single vectorised pass — earlier Python double-loop
+    # cost ~3x as long for the same outcome (4096 micro-tensor copies vs
+    # one big permute/reshape).
     h_padded = _align_up(h_data)
     w_padded = _align_up(w_data)
     n_triplets = (n_channels + 2) // 3
-    yuv = torch.zeros((n_triplets, 3, h_padded, w_padded), dtype=torch.uint8, device=tensor.device)
-    for t in range(n_triplets):
-        for c in range(3):
-            ch = t * 3 + c
-            if ch < n_channels:
-                yuv[t, c, :h_data, :w_data] = u8[ch]
-            elif ch == 0:
-                # only happens when n_channels==0 which would have raised earlier
-                pass
-            else:
-                # tail pad: replicate last real channel for cleaner codec behaviour
-                yuv[t, c, :h_data, :w_data] = u8[n_channels - 1]
+    pad_channels = n_triplets * 3 - n_channels
+    if pad_channels > 0:
+        # Replicate last real channel into the tail slots for cleaner
+        # codec behaviour (vs zero pad which is a hard edge in the bitstream).
+        u8_padded = torch.cat(
+            [u8, u8[-1:].expand(pad_channels, h_data, w_data)],
+            dim=0,
+        )
+    else:
+        u8_padded = u8
+    # [n_triplets*3, h_data, w_data] -> [n_triplets, 3, h_data, w_data]
+    yuv_data = u8_padded.reshape(n_triplets, 3, h_data, w_data)
+    if h_padded == h_data and w_padded == w_data:
+        yuv = yuv_data.contiguous()
+    else:
+        yuv = torch.zeros(
+            (n_triplets, 3, h_padded, w_padded),
+            dtype=torch.uint8, device=tensor.device,
+        )
+        yuv[:, :, :h_data, :w_data] = yuv_data
 
-    backend = DirectBackend(
-        height=h_padded, width=w_padded,
-        qp=qp, lossless=lossless,
-    )
-    try:
-        packets = backend.encode_tensor_frames(yuv)
-        codec_bytes = b"".join(packets)
-    finally:
-        backend.close()
+    backend = _get_or_create_backend(h_padded, w_padded, qp=qp, lossless=lossless)
+    packets = backend.encode_tensor_frames(yuv)
+    codec_bytes = b"".join(packets)
 
     return WireTensor(
         name=name,
@@ -280,23 +327,19 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
             f"be running the same version."
         )
 
-    backend = DirectBackend(height=h_padded, width=w_padded)
-    try:
-        # decode_frames_cuda expects a list of bytes packets — but we
-        # concatenated them on encode. The decoder takes the full
-        # bitstream as a single packet.
-        decoded_t = backend.decode_frames_cuda([payload], n_frames)
-    finally:
-        backend.close()
+    backend = _get_decode_backend(h_padded, w_padded)
+    # decode_frames_cuda expects a list of bytes packets — but we
+    # concatenated them on encode. The decoder takes the full
+    # bitstream as a single packet.
+    decoded_t = backend.decode_frames_cuda([payload], n_frames)
 
     yuv = decoded_t.to(device=device)  # [n_frames, 3, h_padded, w_padded] uint8
-    # Crop padding and unpack triplets back into channels
-    out_channels = torch.empty((n_channels, h_data, w_data), dtype=torch.uint8, device=device)
-    for t in range(n_frames):
-        for c in range(3):
-            ch = t * 3 + c
-            if ch < n_channels:
-                out_channels[ch] = yuv[t, c, :h_data, :w_data]
+    # Crop spatial padding + flatten triplets back into channels in one
+    # vectorised pass. The previous Python double-loop did n_frames*3 (~4096
+    # for FLUX) micro-copies at ~80us each = ~330ms of pure launch overhead.
+    yuv_cropped = yuv[:, :, :h_data, :w_data]                             # [n_frames, 3, h_data, w_data]
+    flat = yuv_cropped.reshape(n_frames * 3, h_data, w_data)              # [n_frames*3, h_data, w_data]
+    out_channels = flat[:n_channels].contiguous()                         # [n_channels, h_data, w_data]
 
     # Per-channel dequant. mins/maxs are float32 lists shipped in the header.
     mins_t = torch.tensor(var_mins, dtype=torch.float32, device=device).view(-1, 1, 1)
