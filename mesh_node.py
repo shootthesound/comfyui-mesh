@@ -788,9 +788,24 @@ class MeshSplitFlux:
                                                 "MUST match the server's --n-blocks setting."
                                             )}),
                 "remote_host": ("STRING", {"default": "127.0.0.1",
-                                           "tooltip": "Hostname or IP of the back-half server (the 4090)."}),
-                "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535}),
-                "codec_mode": (["raw", "nvenc"], {"default": "nvenc"}),
+                                           "tooltip": (
+                                               "Hostname or IP of the back-half server. "
+                                               "127.0.0.1 = same machine (e.g. two GPUs). "
+                                               "192.168.x.x = LAN. 100.x.x.x = Tailscale. "
+                                               "Public IP / DNS name = remote internet host."
+                                           )}),
+                "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535,
+                                        "tooltip": "TCP port the back-half server is listening on. Default 7777."}),
+                "codec_mode": (["raw", "nvenc"], {"default": "nvenc",
+                                                  "tooltip": (
+                                                      "How activations get put on the wire. "
+                                                      "'nvenc' = NVENC HEVC compresses 3-10× before sending — "
+                                                      "the right choice for any slow wire (LAN, Tailscale, "
+                                                      "residential broadband). "
+                                                      "'raw' = uncompressed bf16 — only better when the wire "
+                                                      "is faster than the codec encode/decode latency, i.e. "
+                                                      "PCIe between two GPUs in the same machine."
+                                                  )}),
                 "codec_qp": ("INT", {"default": 18, "min": 0, "max": 51,
                                      "tooltip": "Lower = higher quality / less compression. 10 = near-lossless. 18 = sharp (default). Towards 28 the image gets noticeably softer with visible noise."}),
                 "codec_lossless": ("BOOLEAN", {"default": False,
