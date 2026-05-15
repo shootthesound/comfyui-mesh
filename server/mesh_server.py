@@ -37,6 +37,7 @@ because that subtree pulls in comfy.ldm.common_dit + comfy.patcher_extension
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 import sys
 import time
@@ -538,12 +539,13 @@ def serve(patcher, host: str, port: int, device: torch.device,
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host, port))
     s.listen(1)
-    print(f"[server] listening on {host}:{port}")
 
     model = patcher.model.diffusion_model
     n_double_blocks = len(model.double_blocks)
     n_single_blocks = len(model.single_blocks)
     n_total_loaded = n_double_blocks + n_single_blocks
+    print(f"[server] READY — listening on {host}:{port} "
+          f"(n_blocks={n_total_loaded}: {n_double_blocks}D + {n_single_blocks}S)")
 
     # Track currently-applied client LoRA session id so we know when to
     # swap. None = no client LoRA applied; "empty" = client says "no LoRA".
@@ -580,36 +582,42 @@ def serve(patcher, host: str, port: int, device: torch.device,
                 elif kind == "reconfigure":
                     # Client wants the server to relaunch with a different
                     # --n-blocks. ACK first so the client knows we got it
-                    # and can expect the socket to drop, then re-exec.
+                    # (and can expect the socket to drop), then write a
+                    # small handoff file so the GUI launcher knows to
+                    # restart us with the new value, and exit.
+                    #
+                    # We deliberately do NOT use os.execv here: on Windows
+                    # execv spawns a new process and exits the current
+                    # one, which detaches the new process from the GUI's
+                    # subprocess handle. The GUI would lose the stdout
+                    # tail and the user would see no "ready" message.
+                    # The handoff-file dance keeps the GUI in the
+                    # parent-process role for the relaunched server.
                     new_n_blocks = int(header.get("n_blocks", n_total_loaded))
-                    print(f"[server] reconfigure request: --n-blocks "
-                          f"{n_total_loaded} -> {new_n_blocks}")
+                    print(f"[server] RESTARTING: reconfigure request "
+                          f"--n-blocks {n_total_loaded} -> {new_n_blocks}")
                     protocol.send_message(conn, {
                         "kind": "reconfigure_ack",
                         "tensors": [],
                         "new_n_blocks": new_n_blocks,
                     }, [])
-                    # Close sockets so the new process can re-bind the port.
                     try: conn.close()
                     except Exception: pass
                     try: s.close()
                     except Exception: pass
-                    # Rebuild argv with the new --n-blocks value.
-                    new_argv = list(sys.argv)
-                    if "--n-blocks" in new_argv:
-                        idx = new_argv.index("--n-blocks")
-                        if idx + 1 < len(new_argv):
-                            new_argv[idx + 1] = str(new_n_blocks)
-                        else:
-                            new_argv.append(str(new_n_blocks))
-                    else:
-                        new_argv.extend(["--n-blocks", str(new_n_blocks)])
-                    print(f"[server] re-exec: {sys.executable} {' '.join(new_argv)}")
+
+                    handoff = Path(__file__).parent / "mesh_server_reconfig.tmp"
+                    try:
+                        handoff.write_text(
+                            json.dumps({"n_blocks": new_n_blocks}),
+                            encoding="utf-8",
+                        )
+                        print(f"[server] wrote {handoff.name} for GUI relaunch")
+                    except Exception as e:
+                        print(f"[server] could not write {handoff.name}: {e}")
+                    print(f"[server] exiting; GUI launcher will restart with "
+                          f"--n-blocks={new_n_blocks}")
                     sys.stdout.flush()
-                    os.execv(sys.executable, [sys.executable] + new_argv)
-                    # execv replaces the current process image; control
-                    # does not return. Fallthrough below is defensive
-                    # only — if execv somehow fails, exit cleanly.
                     sys.exit(0)
 
                 elif kind == "forward_double_blocks":

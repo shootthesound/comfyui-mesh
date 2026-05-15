@@ -633,6 +633,37 @@ class MeshServerGUI:
         self.stop_btn.config(state=DISABLED)
         self.status_label.config(text="idle", fg="#666")
 
+        # If the server exited because it received a `reconfigure`
+        # message from the client, it left a small handoff file
+        # telling us what to relaunch with. Apply that to the GUI's
+        # form (so the user sees the new value visually) and immediately
+        # restart the subprocess.
+        handoff = HERE / "mesh_server_reconfig.tmp"
+        if handoff.exists():
+            try:
+                data = json.loads(handoff.read_text(encoding="utf-8"))
+                new_n = int(data.get("n_blocks", -1))
+            except Exception:
+                new_n = -1
+            try:
+                handoff.unlink()
+            except Exception:
+                pass
+            if new_n >= 0:
+                self._append(
+                    f"\n[gui] server requested reconfigure to "
+                    f"n_blocks={new_n} — applying + restarting...\n\n"
+                )
+                self.n_blocks_var.set(new_n)
+                # Refresh the n_blocks_max info label etc.
+                try:
+                    self._refresh_after_file_change()
+                except Exception:
+                    pass
+                # Relaunch the subprocess with the new n_blocks via
+                # the same Start path the user would click.
+                self._on_start()
+
     def _reader_loop(self, proc: subprocess.Popen):
         try:
             for line in iter(proc.stdout.readline, ""):
