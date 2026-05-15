@@ -488,49 +488,79 @@ def _strip_diffusion_back_half(
     nn.Module in place — see the comment in MeshSplitFlux.configure for
     the cache-trade reasoning.
 
-    Idempotent for matching configs (so re-running the workflow doesn't
-    re-strip); raises clearly if asked to re-strip with a DIFFERENT
-    config (the original block weights are gone, so we can't satisfy a
-    different split point without a model reload)."""
+    Three call cases:
+
+    1. **Fresh model** — no prior strip. Strip the requested range.
+    2. **Same config** — strip already matches request. No-op.
+    3. **Increase** — request strips MORE blocks than prior. The
+       additional blocks still hold their original weights, so we can
+       extend the strip in place (incrementally).
+    4. **Decrease** — request strips FEWER blocks than prior. The
+       already-stripped blocks' weights are gone, so we can't restore
+       them. Raise — user must reload the model.
+
+    The increase path is what makes "change n_blocks_remote upward
+    without relaunching ComfyUI" work."""
     n_total_doubles = len(diffusion.double_blocks)
     n_total_singles = len(diffusion.single_blocks)
     requested = (n_double_remote, n_single_remote, n_total_doubles, n_total_singles)
 
     prior = getattr(diffusion, "_mesh_strip_config", None)
-    if prior is not None:
-        if prior == requested:
+    if prior is None:
+        # Fresh strip — initial range.
+        new_db_range = range(n_total_doubles - n_double_remote, n_total_doubles)
+        new_sb_range = range(0, n_single_remote)
+    else:
+        prior_db, prior_sb, prior_td, prior_ts = prior
+        if (prior_td, prior_ts) != (n_total_doubles, n_total_singles):
+            # The model itself changed shape — different checkpoint
+            # loaded into the same MODEL slot. Strip can't continue.
+            raise RuntimeError(
+                f"Model shape changed since last mesh-strip "
+                f"(was {prior_td}+{prior_ts}, now {n_total_doubles}+{n_total_singles}). "
+                "Reload the model before re-running with mesh."
+            )
+        if prior_db == n_double_remote and prior_sb == n_single_remote:
             return 0  # already stripped for this exact config
-        raise RuntimeError(
-            f"Model is already mesh-stripped for "
-            f"({prior[0]} doubles, {prior[1]} singles) and the stripped "
-            f"weights are gone. You asked for ({n_double_remote}, "
-            f"{n_single_remote}). Reload the model (force-reset the "
-            f"UNETLoader node, or restart ComfyUI) before changing "
-            f"n_blocks_remote."
+        if prior_db > n_double_remote or prior_sb > n_single_remote:
+            # Decrease — would need to un-strip, but those weights are gone.
+            raise RuntimeError(
+                f"Mesh-stripped at ({prior_db} doubles, {prior_sb} singles); "
+                f"can't decrease to ({n_double_remote}, {n_single_remote}) — "
+                "the stripped weights are gone. Reload the model (force-reset "
+                "the UNETLoader node, or restart ComfyUI) to decrease "
+                "n_blocks_remote. (Increasing it works without reload.)"
+            )
+        # Increase on at least one axis. Strip only the NEWLY-back-half blocks.
+        # Doubles: new range extends the strip earlier in the stack.
+        new_db_range = range(
+            n_total_doubles - n_double_remote,
+            n_total_doubles - prior_db,
         )
+        # Singles: new range extends the strip later in the stack.
+        new_sb_range = range(prior_sb, n_single_remote)
 
-    # Strip the LAST n_double_remote doubles (server runs them). Capture
-    # each block's parameter signature first so the stub can keep
-    # presenting those keys in state_dict (LoRA mapping needs them).
-    drop_db = n_total_doubles - n_double_remote
-    for i in range(drop_db, n_total_doubles):
+    # Strip — capture each block's parameter signature first so the stub
+    # can keep presenting those keys in state_dict (LoRA mapping needs them).
+    stripped_count = 0
+    for i in new_db_range:
         sig = _capture_block_param_signature(diffusion.double_blocks[i])
         diffusion.double_blocks[i] = MeshRemoteStub(sig)
-
-    # Strip the FIRST n_single_remote singles (server runs the leading
-    # singles after the doubles per wire semantics; client keeps the tail).
-    for i in range(n_single_remote):
+        stripped_count += 1
+    for i in new_sb_range:
         sig = _capture_block_param_signature(diffusion.single_blocks[i])
         diffusion.single_blocks[i] = MeshRemoteStub(sig)
+        stripped_count += 1
 
     diffusion._mesh_strip_config = requested
 
-    # Drop the now-orphaned tensors from CUDA's caching allocator.
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if stripped_count > 0:
+        # Drop the now-orphaned tensors from CUDA's caching allocator.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    return (n_double_remote + n_single_remote)
+    return stripped_count
 
 
 def _split_back_half_patches(
