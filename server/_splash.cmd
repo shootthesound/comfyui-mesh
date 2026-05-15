@@ -10,11 +10,11 @@ REM DLL loads + Defender scan can eat 10-30s before our GUI script
 REM runs at all. Without this, the user clicks the launcher and stares
 REM at nothing.
 
-title comfyui-mesh starting...
+title ComfyUI Mesh : Daedalus starting...
 mode con cols=64 lines=12 >nul
 
 echo.
-echo   Starting comfyui-mesh server GUI...
+echo   Starting ComfyUI Mesh : Daedalus...
 echo.
 echo   First launch can take 10-30 seconds on Windows
 echo   (Python + venv site init + tkinter DLLs + Defender scan).

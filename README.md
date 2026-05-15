@@ -1,5 +1,8 @@
 # comfyui-mesh
 
+**ComfyUI Mesh : Icarus** *(the ComfyUI client node)* ↔
+**ComfyUI Mesh : Daedalus** *(the back-half server)*
+
 **Split a diffusion model across two GPUs — either over a gigabit
 network OR between two cards in the same machine. The activations
 between them get compressed live by NVIDIA's idle video codec
@@ -19,10 +22,10 @@ bytes on the wire while they're already on the GPU.
 
 ```
                 ┌─────────────────┐                     ┌─────────────────┐
-                │  ComfyUI host   │   NVENC HEVC wire   │  Mesh server    │
-                │                 │ ─── ~10 MB / step ─►│                 │
-   img latent ──┤ front-half      │                     │ back-half       │── img latent
-                │ blocks + VAE    │ ◄────────────────── │ slim-loaded     │
+                │     Icarus      │   NVENC HEVC wire   │    Daedalus     │
+                │  (client node)  │ ─── ~10 MB / step ─►│  (back-half)    │
+   img latent ──┤ front-half      │                     │ slim-loaded     │── img latent
+                │ blocks + VAE    │ ◄────────────────── │ server          │
                 └─────────────────┘    ~10 MB / step    └─────────────────┘
                        LoRAs work transparently across the wire
 ```
@@ -128,10 +131,10 @@ The server prints `[server] READY — listening on 0.0.0.0:7777 (n_blocks=4: 4D 
 ### Wire it up in a workflow
 
 ```
-UNETLoader  →  (optional LoraLoader)  →  Mesh Split FLUX  →  KSampler
+UNETLoader  →  (optional LoraLoader)  →  Icarus  →  KSampler
 ```
 
-Set on the `Mesh Split FLUX` node:
+Set on the `Icarus` node:
 
 - **`n_blocks_remote`** = same number as the server's GUI (default 4)
 - **`remote_host`** = the server's LAN IP, e.g. `192.168.0.18`, or
@@ -179,7 +182,7 @@ overkill and adds latency. Set `codec_mode = raw` for same-host pairs.
 
 ## What the two nodes do
 
-### `Mesh Split FLUX`
+### `Icarus`
 
 Pass-through MODEL node. Slot it between the model loader (or
 LoraLoader) and the sampler. Its parameters:
@@ -200,7 +203,7 @@ LoraLoader) and the sampler. Its parameters:
 
 ## Live UX on the node
 
-The `Mesh Split FLUX` node has a few inline UI behaviours so you don't
+The `Icarus` node has a few inline UI behaviours so you don't
 have to hunt the console for status:
 
 - **Always-on connection indicator** at the bottom: green dot = client
@@ -225,7 +228,7 @@ have to hunt the console for status:
   ComfyUI launch).
 
 - **Last-used values remembered** across fresh node drops. Drop a
-  `Mesh Split FLUX` into a brand-new workflow and your last
+  `Icarus` into a brand-new workflow and your last
   `remote_host` / `n_blocks_remote` / `codec_qp` etc. come back
   pre-filled. Loading a saved workflow always wins over the
   remembered defaults.
@@ -266,7 +269,7 @@ What's known and stable today:
   code (block signatures, modulation, vec structure differ). Open to
   contributions or sponsored work.
 - **Workflow ordering for client-LoRA forwarding**: LoraLoader must
-  come BEFORE `Mesh Split FLUX` in the graph. After-Mesh patches don't
+  come BEFORE `Icarus` in the graph. After-Mesh patches don't
   propagate to the captured patcher reference. Tooltip on the node
   warns about this.
 - **Decreasing `n_blocks_remote` requires a ComfyUI restart.**

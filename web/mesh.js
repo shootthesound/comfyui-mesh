@@ -272,7 +272,7 @@ function _helpHTML() {
 <h3>🎨 LoRAs</h3>
 <ul>
   <li>Workflow ordering matters: <code>LoraLoader</code> must come
-      <em>BEFORE</em> Mesh Split FLUX in the graph for the LoRA to be
+      <em>BEFORE</em> Icarus in the graph for the LoRA to be
       visible to this node and forwarded to the server.</li>
   <li>Keep <code>forward_client_loras</code> ON so the LoRA also
       affects back-half blocks (the ones running on the server).</li>
@@ -349,7 +349,7 @@ function showHelpModal() {
     header.style.cssText =
         "font-size: 15px; font-weight: 600; color: #fff; padding-bottom: 4px; " +
         "border-bottom: 1px solid #444;";
-    header.textContent = "Mesh Split FLUX — Tips & troubleshooting";
+    header.textContent = "ComfyUI Mesh : Icarus — Tips & troubleshooting";
 
     const body = document.createElement("div");
     body.style.cssText =

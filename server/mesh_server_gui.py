@@ -332,7 +332,7 @@ class MeshServerGUI:
     def __init__(self, root: Tk):
         _log_event("MeshServerGUI.__init__ entered")
         self.root = root
-        root.title("comfyui-mesh — back-half server")
+        root.title("ComfyUI Mesh : Daedalus — back-half server")
         root.geometry("780x560")
         _apply_dark_theme(root)
 

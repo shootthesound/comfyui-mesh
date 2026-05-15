@@ -8,7 +8,7 @@
 
 A two-host split rig for FLUX.2 inference:
 
-- **Client host (the other machine, e.g. a 5090):** runs ComfyUI normally with a custom node (`Mesh Split FLUX`) that intercepts FLUX's double-block forward at a configurable index and ships the remaining double-block work to *this* machine over TCP.
+- **Client host (the other machine, e.g. a 5090):** runs ComfyUI normally with a custom node (`Icarus`) that intercepts FLUX's double-block forward at a configurable index and ships the remaining double-block work to *this* machine over TCP.
 - **Server host (this machine, e.g. a 4090):** runs `mesh_server.py`. **Slim-loads only the back-half double_blocks** of the FLUX checkpoint from disk — does NOT load the full model. Listens on TCP for `forward_double_blocks` requests.
 - **The wire** between the two carries codec-compressed activations (NVENC HEVC YUV444 via `nvenc-pframe`). At `codec_qp=18` the wire payload is ~12-15 MB per round-trip, ~120 MB per generation total (4 timesteps × 2 directions). Viable over LAN, Tailscale, even residential broadband.
 
@@ -118,7 +118,7 @@ Each headless launcher has an EDIT-ME line at the top:
 set N_BLOCKS=4
 ```
 
-This MUST match the client's `n_blocks_remote` setting on the Mesh Split FLUX node. **No protocol validation in v1** — if the numbers disagree, output is wrong, no error.
+This MUST match the client's `n_blocks_remote` setting on the Icarus node. **No protocol validation in v1** — if the numbers disagree, output is wrong, no error.
 
 For the typical case (this host is on the OTHER side of the wire from the ComfyUI machine, and has one GPU), `run_server.bat` is the right launcher.
 
@@ -126,7 +126,7 @@ The server should end with `[server] listening on 0.0.0.0:7777`.
 
 ### 5. Network: tell Peter the IP/port
 
-The client's Mesh Split FLUX node needs to know how to reach this machine. Two paths:
+The client's Icarus node needs to know how to reach this machine. Two paths:
 
 - **LAN:** `ipconfig` (Windows) or `ip addr` (Linux). Looks like `192.168.x.x`.
 - **Tailscale:** `tailscale ip -4`. Looks like `100.x.x.x`. Works off-LAN.

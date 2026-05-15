@@ -1,12 +1,18 @@
-# comfyui-mesh — back-half server
+# ComfyUI Mesh : Daedalus *(the back-half server)*
 
-Companion to the `comfyui-mesh` ComfyUI custom node (`../README.md`).
-This folder gets deployed to whichever host holds the back-half GPU —
-a second machine on the LAN/Tailscale, or a second card in the same
-desktop. It runs a long-lived TCP server: per request, it takes
-activations from the front half of FLUX's transformer block stack,
-runs the remaining doubles + singles through its slim-loaded weights,
-and ships the result back over the wire (NVENC-compressed).
+Companion to **Icarus**, the ComfyUI custom node living one folder up
+(`../README.md`). This folder gets deployed to whichever host holds
+the back-half GPU — a second machine on the LAN/Tailscale, or a
+second card in the same desktop. It runs a long-lived TCP server:
+per request, it takes activations from the front half of FLUX's
+transformer block stack, runs the remaining doubles + singles
+through its slim-loaded weights, and ships the result back over the
+wire (NVENC-compressed).
+
+(Daedalus prepares the wings; Icarus rides them. The names are
+mythological flair on the underlying engineering split — the server
+slim-loads the back-half model, the client node hands it activations
+to chew on.)
 
 Two headline architectural properties:
 
@@ -209,7 +215,7 @@ strip applied and needs a ComfyUI restart to pick up the smaller
 value (the client's stripped weights are gone for the session).
 
 The GUI also auto-restarts the server when the **client** asks for a
-new `--n-blocks` (via the Confirm button on the Mesh Split FLUX node).
+new `--n-blocks` (via the Confirm button on the Icarus node).
 The server writes a small handoff file with the new value before
 exiting, the GUI picks it up, updates the spinbox visually, and
 relaunches the subprocess. Net log:
@@ -372,7 +378,7 @@ Two important things to know about same-host setups:
 3. **Lowering `n_blocks` in the server GUI also requires restarting
    ComfyUI on the client.** Same reason as above: when the GUI restarts
    the server with a smaller `--n-blocks`, the *client* still has the
-   bigger strip applied and can't recover. The Mesh Split FLUX node
+   bigger strip applied and can't recover. The Icarus node
    surfaces a "Confirm" button on `n_blocks_remote` mismatch, but
    confirming with a smaller value only works for the in-flight session
    if the client's previous strip wasn't already wider — otherwise the

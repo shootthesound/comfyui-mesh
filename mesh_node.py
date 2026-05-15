@@ -1018,5 +1018,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MeshSplitFlux": "Mesh Split FLUX",
+    "MeshSplitFlux": "ComfyUI Mesh : Icarus",
 }
