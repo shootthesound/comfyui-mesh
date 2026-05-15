@@ -719,6 +719,16 @@ class MeshServerGUI:
         self._append(f"\n[gui] launching: {' '.join(cmd)}\n")
         self._append(f"[gui] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', '(unset)')}\n\n")
 
+        # On Windows: CREATE_NO_WINDOW suppresses the empty black console
+        # that otherwise pops up alongside the GUI. The stdout PIPE keeps
+        # working — we still receive every print() into the log area.
+        # CREATE_NEW_PROCESS_GROUP is kept so Stop can send Ctrl+Break
+        # to the subprocess.
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
         try:
             self.proc = subprocess.Popen(
                 cmd,
@@ -728,7 +738,7 @@ class MeshServerGUI:
                 text=True,
                 env=env,
                 cwd=str(HERE),
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                creationflags=creationflags,
             )
         except FileNotFoundError as e:
             messagebox.showerror("comfyui-mesh", f"Could not launch python: {e}")
