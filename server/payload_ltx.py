@@ -56,6 +56,8 @@ mirroring to the other.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import torch
@@ -90,6 +92,69 @@ _COMPRESSED_KEYS = (
 
 # transformer_options flags the LTX-AV block.forward() actually reads.
 _FLAG_KEYS = ("run_vx", "run_ax", "a2v_cross_attn", "v2a_cross_attn")
+
+
+# Names of the *wire tensors* (after flattening — PE 3-tuples already
+# split into `.cos`/`.sin` pairs) that are CONSTANT within a single
+# generation. The client hashes these + relevant meta into a
+# constants-session-id; on subsequent calls with the same id, it ships
+# only the per-timestep tensors and the server pulls these from cache.
+#
+# Per-timestep tensors (always shipped): vx, ax, all `*_timestep.data`.
+CONSTANT_WIRE_NAMES = frozenset({
+    "v_context", "a_context",
+    "attention_mask", "self_attention_mask",
+    "v_pe.cos", "v_pe.sin",
+    "a_pe.cos", "a_pe.sin",
+    "v_cross_pe.cos", "v_cross_pe.sin",
+    "a_cross_pe.cos", "a_cross_pe.sin",
+})
+
+
+def compute_constants_session_id(
+    constants_named: list[tuple[str, torch.Tensor]],
+    meta: dict[str, Any],
+) -> str:
+    """Compute a stable id for a set of constant tensors + their meta.
+
+    Uses `id(t)` for content fingerprinting — within one ComfyUI process
+    the text-encoder output and PE tensors are the SAME Python objects
+    across all timesteps of a generation, so id-equality is a cheap
+    proxy for content-equality without paying a GPU→CPU sync per call.
+
+    Hashes alongside: shape + dtype (so a resolution change between
+    generations invalidates), the constants-relevant meta values
+    (pe_split_mode, flags, the constant-keys subset of none_keys).
+    Returns a 16-hex-char digest.
+    """
+    h = hashlib.sha1()
+    for name, t in sorted(constants_named, key=lambda x: x[0]):
+        h.update(name.encode())
+        h.update(str(tuple(t.shape)).encode())
+        h.update(str(t.dtype).encode())
+        h.update(str(id(t)).encode())
+    # Constant-relevant meta: pe_split_mode (per-key bool), flags
+    # (transformer_options run_vx etc), and the subset of none_keys that
+    # are constant-keys. Per-timestep meta (compressed, non-constant
+    # none_keys) is intentionally NOT hashed — it changes per call.
+    h.update(json.dumps(meta.get("pe_split_mode", {}), sort_keys=True).encode())
+    h.update(json.dumps(meta.get("flags", {}), sort_keys=True).encode())
+    constant_root_keys = {"v_context", "a_context", "attention_mask",
+                          "self_attention_mask", "v_pe", "a_pe",
+                          "v_cross_pe", "a_cross_pe"}
+    constant_none = sorted(k for k in (meta.get("none_keys", []) or [])
+                           if k in constant_root_keys)
+    h.update(json.dumps(constant_none).encode())
+    return h.hexdigest()[:16]
+
+
+def partition_named_by_constant(
+    named: list[tuple[str, torch.Tensor]],
+) -> tuple[list[tuple[str, torch.Tensor]], list[tuple[str, torch.Tensor]]]:
+    """Split flattened named tensors into (constants, per_timestep)."""
+    consts = [(n, t) for n, t in named if n in CONSTANT_WIRE_NAMES]
+    perstep = [(n, t) for n, t in named if n not in CONSTANT_WIRE_NAMES]
+    return consts, perstep
 
 
 def flatten_payload(args: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, torch.Tensor]]]:

@@ -217,6 +217,11 @@ class MeshClient:
         # server, to avoid reshipping ~MB-sized LoRA payloads every
         # timestep when nothing changed.
         self._last_sent_lora_session: str = ""
+        # Track which LTX constants-session (text contexts + PE tensors
+        # + attention masks) the server last cached for us. Empty string
+        # = nothing cached / first call after (re)connect; matches the
+        # FLUX LoRA-session pattern.
+        self._last_shipped_constants_session: str = ""
         # Server's currently-running --n-blocks, learned from the
         # hello_ack handshake. Used to detect client/server drift
         # so MeshSplitLTX.configure() can block the run with a
@@ -262,6 +267,10 @@ class MeshClient:
             except Exception:
                 pass
             self._sock = None
+        # Server's caches die with the connection; force re-ship on
+        # the next call.
+        self._last_sent_lora_session = ""
+        self._last_shipped_constants_session = ""
 
     def try_reconnect(self) -> bool:
         """Best-effort reconnect attempt for the status indicator's
@@ -306,10 +315,13 @@ class MeshClient:
             # Server closed before we read the ack — treat as success;
             # _ensure_open will reconnect later and pick up the new state.
             pass
-        # Drop the dead socket + reset LoRA-session bookkeeping (new
-        # server process has no memory of what we shipped).
+        # Drop the dead socket + reset cache bookkeeping (new server
+        # process has no memory of what we shipped). close() already
+        # resets both session ids, but be explicit in case close() is
+        # ever made selective.
         self.close()
         self._last_sent_lora_session = ""
+        self._last_shipped_constants_session = ""
         # Optimistically record what we asked for; the next _ensure_open
         # will overwrite this with whatever the new server actually reports.
         self.server_n_blocks = int(new_n_blocks)
@@ -451,9 +463,19 @@ class MeshClient:
 
         meta, named = payload_ltx.flatten_payload(args)
 
+        # Split into constants (text contexts + PE tensors + attention
+        # masks — same Python objects across all timesteps of a
+        # generation) and per-timestep tensors (vx/ax + *_timestep.data).
+        # On cache hit, we omit constants from the wire; the server
+        # pulls them from its cached set under constants_session_id.
+        constants_named, perstep_named = payload_ltx.partition_named_by_constant(named)
+        constants_session_id = payload_ltx.compute_constants_session_id(constants_named, meta)
+        ship_constants = (constants_session_id != self._last_shipped_constants_session)
+        named_to_ship = (constants_named + perstep_named) if ship_constants else perstep_named
+
         wire_tensors = []
         blobs = []
-        for name, t in named:
+        for name, t in named_to_ship:
             w = codec.encode_raw(name, t)
             wire_tensors.append(w.to_header())
             blobs.append(w.bytes_payload)
@@ -475,6 +497,8 @@ class MeshClient:
             "start_block": int(start_block),
             "ltx_meta": meta,
             "client_lora_session": client_lora_session,
+            "constants_session_id": constants_session_id,
+            "constants_shipped": ship_constants,
         }
 
         t0 = time.time()
@@ -485,7 +509,12 @@ class MeshClient:
             print(f"[mesh] connection lost to {self.host}:{self.port} ({e}); will reconnect")
             self.close()
             self._last_sent_lora_session = ""
+            self._last_shipped_constants_session = ""
             raise MeshReconnect(str(e)) from e
+
+        # Successful send + receive — server has now seen this session id.
+        # Safe to skip constants on subsequent calls until the id changes.
+        self._last_shipped_constants_session = constants_session_id
         elapsed = time.time() - t0
 
         if resp_header.get("kind") != "forward_ltx_blocks_response":

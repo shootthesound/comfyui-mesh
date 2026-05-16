@@ -577,9 +577,22 @@ def forward_back_half_ltx(model, payload: dict) -> tuple[torch.Tensor, torch.Ten
     return vx, ax
 
 
-def _decode_request_tensors_ltx(header: dict, blobs: list[bytes], device: torch.device):
-    """Decode an LTX `forward_ltx_blocks` request. Returns
-    (payload_dict_ready_for_block_forward, client_lora_blob_or_None).
+def _decode_request_tensors_ltx(
+    header: dict,
+    blobs: list[bytes],
+    device: torch.device,
+    constants_cache: dict,
+):
+    """Decode an LTX `forward_ltx_blocks` request, transparently
+    merging cached constants when the client said `constants_shipped=
+    False` and the session id matches.
+
+    `constants_cache` is a mutable dict on the calling serve_ltx loop
+    of shape `{"session_id": str, "by_name": {name: tensor}}`. We
+    update it in place when a new full payload arrives (so subsequent
+    cache-hit calls can satisfy the missing tensors).
+
+    Returns (payload_dict_ready_for_block_forward, client_lora_blob_or_None).
     """
     import payload_ltx
 
@@ -592,6 +605,33 @@ def _decode_request_tensors_ltx(header: dict, blobs: list[bytes], device: torch.
             continue
         name = w["name"]
         by_name[name] = codec.decode(w, b, device=device)
+
+    incoming_session = header.get("constants_session_id", "") or ""
+    constants_shipped = bool(header.get("constants_shipped", True))
+
+    if constants_shipped:
+        # Full payload — refresh the cache with the constants subset
+        # of what was shipped. Per-timestep tensors stay in by_name as-is.
+        new_consts = {n: t for n, t in by_name.items()
+                      if n in payload_ltx.CONSTANT_WIRE_NAMES}
+        constants_cache["session_id"] = incoming_session
+        constants_cache["by_name"] = new_consts
+    else:
+        # Cache-hit expected. Validate that the client's session id
+        # matches what we have. Mismatch = client thinks we have it
+        # cached but we don't (e.g. server restarted) — raise so the
+        # client's reconnect path forces a re-ship.
+        cached_session = constants_cache.get("session_id", "")
+        if incoming_session != cached_session:
+            raise RuntimeError(
+                f"constants cache miss: client wants session "
+                f"{incoming_session!r}, server has {cached_session!r}; "
+                f"client must retry with full payload"
+            )
+        # Merge cached constants in (caller-owned dict; merge by
+        # adding to by_name so reconstruct sees the full set).
+        for name, t in constants_cache["by_name"].items():
+            by_name.setdefault(name, t)
 
     ltx_meta = header.get("ltx_meta", {}) or {}
     payload = payload_ltx.reconstruct_payload(ltx_meta, by_name)
@@ -625,11 +665,17 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
           f"(LTX-AV, n_blocks={n_loaded} transformer_blocks)")
 
     current_client_lora_session: str | None = None
+    # Per-connection cache of constant tensors (text contexts, PE pairs,
+    # attention masks). Reset on every new accept() so a freshly-
+    # reconnecting client always re-ships on its first call (matches
+    # the client's `_last_shipped_constants_session` reset on close()).
+    constants_cache: dict = {"session_id": "", "by_name": {}}
 
     while True:
         conn, addr = s.accept()
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print(f"[server] client connected: {addr}")
+        constants_cache = {"session_id": "", "by_name": {}}
         try:
             while True:
                 header, blobs = protocol.recv_message(conn)
@@ -682,7 +728,9 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
                 elif kind == "forward_ltx_blocks":
                     client_start_block = int(header.get("start_block", 0))
                     t0 = time.time()
-                    payload, client_lora_blob = _decode_request_tensors_ltx(header, blobs, device)
+                    payload, client_lora_blob = _decode_request_tensors_ltx(
+                        header, blobs, device, constants_cache,
+                    )
                     t_decode = time.time() - t0
 
                     incoming_session = header.get("client_lora_session", "") or ""
@@ -720,8 +768,9 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
                         },
                     }
                     protocol.send_message(conn, resp_header, [w.bytes_payload for w in wire_outs])
+                    cache_state = "shipped" if header.get("constants_shipped", True) else "cached"
                     print(f"[server] forward LTX {n_loaded} blocks "
-                          f"(client said start={client_start_block}): "
+                          f"(client said start={client_start_block}, constants={cache_state}): "
                           f"decode {t_decode*1000:.1f} ms  fwd {t_forward*1000:.1f} ms  enc {t_encode*1000:.1f} ms  "
                           f"in {sum(len(b) for b in blobs)/1024/1024:.2f} MB  "
                           f"out {sum(len(w.bytes_payload) for w in wire_outs)/1024/1024:.2f} MB")
