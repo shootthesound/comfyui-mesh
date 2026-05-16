@@ -1136,16 +1136,25 @@ class MeshSplitLTX:
                                                       "when the wire is faster than the codec encode/decode "
                                                       "latency, e.g. PCIe between two GPUs in the same machine."
                                                   )}),
-                "forward_client_loras": ("BOOLEAN", {"default": True,
+                "forward_client_loras": ("BOOLEAN", {"default": False,
                                                        "tooltip": (
                                                            "When ON, any LoRAs loaded BEFORE this node in the workflow "
                                                            "(via ComfyUI's standard LoraLoader) get serialized via "
                                                            "safetensors and shipped to the server so the LoRA applies "
-                                                           "to the back-half blocks too. Required for full-model LoRA "
-                                                           "effect when offloading any blocks. Auto-detects changes; "
-                                                           "ships the blob only when LoRA set / strength changes. "
-                                                           "Workflow ordering matters: LoraLoader must come BEFORE "
-                                                           "MeshSplit FLUX in the graph for this to see them."
+                                                           "to the back-half blocks too. Auto-detects changes; ships "
+                                                           "the blob only when the LoRA set / strength changes. "
+                                                           "Workflow ordering: LoraLoader must come BEFORE Icarus LTX "
+                                                           "in the graph for this to see them. "
+                                                           "⚠️ STRONGLY DISCOURAGED on back-half servers with <24 GB "
+                                                           "VRAM: the LTX-AV 22B back-half + active LoRAs + codec "
+                                                           "scratch tips smaller cards into ComfyUI's dynamic-offload "
+                                                           "regime where per-step forward jumps from ~1-2s to ~5-10s "
+                                                           "as weights page in/out mid-gen. Default OFF — use the "
+                                                           "two-sided load pattern instead: load the LoRA in the "
+                                                           "Daedalus LTX server GUI's LoRA slot, AND drop a local "
+                                                           "LoraLoader for the same file AFTER Icarus LTX (between "
+                                                           "Icarus LTX and KSampler) so it stays local-only. "
+                                                           "Whole model gets the LoRA, wire only ever carries activations."
                                                        )}),
             },
             "hidden": {
