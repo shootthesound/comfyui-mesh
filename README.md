@@ -415,7 +415,7 @@ comfyui-mesh/
 
 ---
 
-## Sibling repos
+## Sibling repo
 
 This rig is one expression of "use NVENC silicon as a wire codec for
 non-video state." Related public-or-internal artifacts:
@@ -423,12 +423,8 @@ non-video state." Related public-or-internal artifacts:
 - **`torch-nvenc-compress`** — the original PoC. PCA + per-channel quant
   + NVENC for FLUX mid-block activations and LLM KV cache. Cross-
   architecture transfer numbers measured.
-- **`vortex` / `nvenc-pframe`** — the codec package (CFD validation
-  suite shipped, public release pending). The DirectBackend ctypes
-  wrapper this repo bundles ships from here.
-- **`llmtests_native`** — the LLM-side equivalent. Same primitive
-  (codec on the wire between two split-model nodes), but for
-  Qwen / Mistral / Llama. Validated over LAN + 4G via Tailscale.
+
+
 
 ---
 
@@ -436,7 +432,7 @@ non-video state." Related public-or-internal artifacts:
 
 Author: Peter Neill — `peter@shootthesound.com`
 
-Internal / pre-release. Apache-2.0 components retain their original
+Apache-2.0 components retain their original
 license. Bundled `nvenc_pframe` is Apache-2.0.
 
 Bug reports, feature requests, and architecture additions — open an
