@@ -682,6 +682,8 @@ def _make_ltx_block_replacement(
     codec_qp: int,
     codec_lossless: bool,
     codec_tile_dim: int,
+    forward_client_loras: bool,
+    patcher_capture: dict,
 ):
     """Replacement callback for LTX-AV transformer_blocks[split_index].
     Ships the block_wrap args payload to the server, gets back the
@@ -690,11 +692,55 @@ def _make_ltx_block_replacement(
 
     Only vx and ax are codec-encoded — everything else is raw because
     it's either small (text contexts, modulation timesteps) or cached
-    server-side under constants_session_id after the first call. Client-
-    LoRA forwarding is still a follow-up.
+    server-side under constants_session_id after the first call.
+
+    `forward_client_loras=True` mirrors the FLUX node's behaviour:
+    each call introspects the live patcher.patches dict, filters to
+    patches targeting back-half transformer_blocks, remaps the block
+    indices to the slim model's (0..n_remote-1) range, hashes the
+    result into a session id, and ships the safetensors-encoded blob
+    when the id has changed since last sent. The blob never goes over
+    the wire on unchanged sessions — only the id does.
     """
+    drop_n = n_transformer_blocks - n_remote
+
     def replace_at_split(args, extras):
         for attempt in (1, 2):
+            client_lora_session = ""
+            client_lora_blob = b""
+            if forward_client_loras:
+                patcher = patcher_capture.get("patcher")
+                # When the client is strip-loaded, patches targeting
+                # back-half blocks live in `_mesh_back_half_patches`
+                # (split out so patch_model doesn't try to apply them
+                # to the stubs). Merge them with the live patches dict
+                # so the filter sees the full picture, then filter+remap.
+                live = getattr(patcher, "patches", None) if patcher is not None else None
+                stashed = getattr(patcher, "_mesh_back_half_patches", None) if patcher is not None else None
+                if live or stashed:
+                    combined = dict(live or {})
+                    if stashed:
+                        combined.update(stashed)
+                    slim_patches = lora_io.filter_and_remap_patches_ltx(
+                        combined,
+                        drop_n=drop_n,
+                        n_total=n_transformer_blocks,
+                    )
+                    client_lora_session = lora_io.patches_session_id(slim_patches)
+                else:
+                    # forward toggle on, but no patches loaded — explicit
+                    # empty session so the server unpatches anything left over.
+                    client_lora_session = "empty"
+
+                # Only encode + ship if the session changed since we last
+                # sent it to THIS client (host, port).
+                if client_lora_session and client_lora_session != client._last_sent_lora_session:
+                    if client_lora_session == "empty":
+                        client_lora_blob = b""
+                    else:
+                        client_lora_blob = lora_io.encode_patches_to_safetensors(slim_patches)
+                    client._last_sent_lora_session = client_lora_session
+
             try:
                 vx_back, ax_back = client.call_ltx_blocks(
                     args=args,
@@ -703,6 +749,8 @@ def _make_ltx_block_replacement(
                     codec_qp=codec_qp,
                     codec_lossless=codec_lossless,
                     codec_tile_dim=codec_tile_dim,
+                    client_lora_session=client_lora_session,
+                    client_lora_blob=client_lora_blob,
                 )
             except MeshReconnect:
                 if attempt == 2:
@@ -1123,10 +1171,6 @@ class MeshSplitLTX:
         codec_qp = 1
         codec_lossless = False
         codec_tile_dim = 8
-        # ----- LTX wire path (first cut: raw tensors, no strip, no client-LoRA forwarding) -----
-        # The codec_*, forward_client_loras knobs are accepted for UI
-        # parity with the FLUX node but ignored in this iteration —
-        # they layer on top once correctness is validated end-to-end.
 
         diffusion = model.model.diffusion_model
         diff_cls_name = type(diffusion).__name__
@@ -1199,13 +1243,23 @@ class MeshSplitLTX:
 
         # Move patches targeting now-stripped blocks out of m.patches so
         # ComfyUI's patch_model doesn't try to apply them to the stubs.
+        # The wire forwarder reads them back from _mesh_back_half_patches.
         if n_blocks_remote > 0:
             _split_back_half_patches_ltx(m, n_blocks_remote, n_transformer_blocks)
+
+        # Capture the (post-clone) patcher reference so the per-call
+        # closure can introspect its .patches dict at sample time. This
+        # is the patcher that downstream nodes (KSampler) will see; if
+        # LoraLoader runs BEFORE this node, m.patches has the LoRA
+        # patches at this point and they propagate via clone().
+        patcher_capture: dict = {"patcher": m}
 
         if n_blocks_remote > 0:
             replace_at_split = _make_ltx_block_replacement(
                 client, split_index, n_transformer_blocks, n_blocks_remote,
                 codec_mode, codec_qp, codec_lossless, codec_tile_dim,
+                forward_client_loras,
+                patcher_capture,
             )
             passthrough = _make_ltx_passthrough()
             m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
@@ -1215,7 +1269,8 @@ class MeshSplitLTX:
         print(f"[mesh] LTX offloading {n_blocks_remote}/{n_transformer_blocks} transformer_blocks "
               f"(intercept at index {split_index}); "
               f"server={remote_host}:{remote_port}; "
-              f"codec={codec_mode}")
+              f"codec={codec_mode}; "
+              f"forward_client_loras={forward_client_loras}")
 
         return (m,)
 

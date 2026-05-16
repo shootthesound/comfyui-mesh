@@ -101,6 +101,47 @@ def filter_and_remap_patches(
     return out
 
 
+def filter_and_remap_patches_ltx(
+    patches: dict,
+    *,
+    drop_n: int,
+    n_total: int,
+) -> dict:
+    """LTX-equivalent of filter_and_remap_patches. LTX uses the
+    nested HF-style `diffusion_model.transformer_blocks.{N}.*` key
+    prefix (vs FLUX's flat `double_blocks` / `single_blocks`).
+
+    Keys we drop:
+      - `diffusion_model.transformer_blocks.{N}.*` where N < drop_n
+        (front-half block, the client runs it locally)
+      - everything outside the transformer_blocks namespace (encoders,
+        embeddings, projection layers, vae) — the server holds those
+        modules only for ComfyUI's architecture detection; they're
+        never actually executed in the back-half forward.
+
+    Keys we keep + remap:
+      - `diffusion_model.transformer_blocks.{N}.*` where N >= drop_n
+        → remapped to `diffusion_model.transformer_blocks.{N-drop_n}.*`
+        so the slim back-half model's keys (0..n_remote-1) match.
+    """
+    out = {}
+    prefix = "diffusion_model.transformer_blocks."
+    for key, entries in patches.items():
+        if not key.startswith(prefix):
+            continue
+        rest = key[len(prefix):]
+        try:
+            idx = int(rest.split(".")[0])
+        except (ValueError, IndexError):
+            continue
+        if idx < drop_n:
+            continue  # front-half block, client handles it locally
+        new_idx = idx - drop_n
+        tail = ".".join(rest.split(".")[1:])
+        out[f"{prefix}{new_idx}.{tail}"] = entries
+    return out
+
+
 # ---------------------------------------------------------------------
 # Encode / decode patches dict via safetensors
 # ---------------------------------------------------------------------
