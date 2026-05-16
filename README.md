@@ -368,6 +368,29 @@ For sub-500 MB LoRAs the "LoraLoader BEFORE Icarus LTX +
 encoded blob ships once per session-id change, subsequent timesteps
 within the gen send only the small id.
 
+#### ⚠️ Strongly discouraged — `forward_client_loras=ON` on a server with <24 GB VRAM
+
+**Don't use `forward_client_loras=ON` on a back-half server with
+less than 24 GB of VRAM for LTX.** The LTX-AV 22B back-half slim-load
+plus any active LoRAs plus codec scratch buffers will tip a 12 / 16 /
+20 GB server into ComfyUI's dynamic offload regime, where weights
+get paged in and out of VRAM mid-generation. Symptom: per-step
+forward time on the server jumps from ~1–2 s to ~5–10 s once a
+forwarded LoRA gets applied — that's offload thrash.
+
+On a 24+ GB back-half server, forwarding is fine and the bytes
+amortise well across the session-id cache.
+
+If your back-half is under 24 GB, use the **two-sided load** pattern
+above for ANY LoRA you'd otherwise forward, not just the big ones:
+
+- Server-side slot (primary or Distill LoRA row in the Daedalus LTX GUI)
+- Local-only LoraLoader on the same file, placed to the RIGHT of
+  Icarus LTX in the workflow so `forward_client_loras` doesn't see it.
+
+That covers the whole model without ever asking the server to
+allocate a transient LoRA buffer on the fly.
+
 #### Server VRAM headroom — 16+ GB recommended
 
 A practical note on sizing the back-half host: **with 16+ GB of

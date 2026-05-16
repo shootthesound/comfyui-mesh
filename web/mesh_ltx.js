@@ -1317,15 +1317,25 @@ app.registerExtension({
 
 api.addEventListener("mesh-ltx-message", (event) => {
     const { node_id, level, text } = event.detail || {};
+    console.log("[mesh-ltx] message received:", { node_id, level, text: text?.slice(0, 80) });
     if (!node_id) return;
     const node = app.graph.getNodeById(parseInt(node_id, 10));
-    if (!node) return;
+    if (!node) {
+        console.warn("[mesh-ltx] no node found for id", node_id);
+        return;
+    }
     if (level === "clear" || !text) {
         delete node._mesh_message_text;
         delete node._mesh_message_level;
     } else {
         node._mesh_message_text = String(text);
         node._mesh_message_level = level || "info";
+    }
+    // Belt-and-braces: dirty BOTH the graph canvas and the node so
+    // litegraph triggers a fresh paint pass even if a concurrent
+    // execution-error event handler is also re-rendering.
+    if (typeof node.setDirtyCanvas === "function") {
+        node.setDirtyCanvas(true, true);
     }
     app.graph.setDirtyCanvas(true, true);
 });
