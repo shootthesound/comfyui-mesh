@@ -67,9 +67,17 @@ import torch
 _TENSOR_KEYS = (
     "v_context", "a_context",
     "attention_mask",
+    "self_attention_mask",
+)
+
+# Rotary positional-embedding keys. Each is a 3-tuple
+# (cos_freq, sin_freq, split_mode) produced by
+# LTXVModel._precompute_freqs_cis: two tensors + a bool flag indicating
+# whether the rope is in split or interleaved mode. We ship the two
+# tensors named `{key}.cos` / `{key}.sin` and stash the bool in meta.
+_PE_KEYS = (
     "v_pe", "a_pe",
     "v_cross_pe", "a_cross_pe",
-    "self_attention_mask",
 )
 
 # Keys that hold CompressedTimestep objects.
@@ -99,6 +107,7 @@ def flatten_payload(args: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[st
         "compressed": {},
         "none_keys": [],
         "flags": {},
+        "pe_split_mode": {},
     }
     named: list[tuple[str, torch.Tensor]] = []
 
@@ -116,6 +125,26 @@ def flatten_payload(args: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[st
             named.append((k, v))
         else:
             raise TypeError(f"flatten_payload: {k!r} expected Tensor or None, got {type(v).__name__}")
+
+    # Rotary PE 3-tuples: (cos, sin, split_mode_bool)
+    for k in _PE_KEYS:
+        v = args.get(k)
+        if v is None:
+            meta["none_keys"].append(k)
+            continue
+        if isinstance(v, tuple) and len(v) == 3:
+            cos, sin, split_mode = v
+            if not (isinstance(cos, torch.Tensor) and isinstance(sin, torch.Tensor)):
+                raise TypeError(
+                    f"flatten_payload: {k!r} expected (Tensor, Tensor, bool) tuple"
+                )
+            named.append((f"{k}.cos", cos))
+            named.append((f"{k}.sin", sin))
+            meta["pe_split_mode"][k] = bool(split_mode)
+        else:
+            raise TypeError(
+                f"flatten_payload: {k!r} expected 3-tuple or None, got {type(v).__name__}"
+            )
 
     # CompressedTimestep entries
     for k in _COMPRESSED_KEYS:
@@ -167,6 +196,7 @@ def reconstruct_payload(
     compressed_meta = meta.get("compressed", {}) or {}
     none_keys = set(meta.get("none_keys", []) or [])
     flags = meta.get("flags", {}) or {}
+    pe_split_mode = meta.get("pe_split_mode", {}) or {}
 
     out: dict[str, Any] = {}
 
@@ -178,6 +208,14 @@ def reconstruct_payload(
             out[k] = None
         else:
             out[k] = tensors_by_name[k]
+
+    for k in _PE_KEYS:
+        if k in none_keys:
+            out[k] = None
+            continue
+        cos = tensors_by_name[f"{k}.cos"]
+        sin = tensors_by_name[f"{k}.sin"]
+        out[k] = (cos, sin, bool(pe_split_mode.get(k, False)))
 
     for k in _COMPRESSED_KEYS:
         if k in none_keys:
