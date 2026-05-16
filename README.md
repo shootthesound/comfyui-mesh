@@ -7,6 +7,8 @@
 
 If this project saves you buying a new GPU, please consider donating — it helps me support more models beyond FLUX and keep this thing maintained.
 
+![Demo workflow with Icarus inline](screenshots/workflow-screenshot.png)
+
 **Split a diffusion model across two GPUs — either over a gigabit
 network OR between two cards in the same machine. The activations
 between them get compressed live by NVIDIA's idle video codec
@@ -164,6 +166,8 @@ Then on the back-half host, in a terminal in the `server/` folder:
    spinbox shows the range, default 4), pick port, click **Start
    Server**.
 
+   ![Daedalus server GUI](screenshots/server.png)
+
 The server prints `[server] READY — listening on 0.0.0.0:7777 (n_blocks=4: 4D + 0S)` when ready.
 
 **For more detail** (manual install path, headless `.bat` launchers,
@@ -177,6 +181,10 @@ server's ComfyUI in sync with the client's): see the
 ```
 UNETLoader  →  (optional LoraLoader)  →  Icarus  →  KSampler
 ```
+
+A ready-to-load demo workflow ships with the repo at
+[`workflows/klein-9b-example.json`](workflows/klein-9b-example.json) —
+drag-and-drop it into ComfyUI to see the full graph wired up.
 
 Set on the `Icarus` node:
 
@@ -238,7 +246,11 @@ overkill and adds latency. Set `codec_mode = raw` for same-host pairs.
 ### `Icarus`
 
 Pass-through MODEL node. Slot it between the model loader (or
-LoraLoader) and the sampler. Its parameters:
+LoraLoader) and the sampler.
+
+<img src="screenshots/icarus%20node.png" alt="Icarus node" width="380">
+
+Its parameters:
 
 | Parameter | Default | What it controls |
 |---|---|---|
@@ -339,6 +351,15 @@ What's known and stable today:
   come BEFORE `Icarus` in the graph. After-Mesh patches don't
   propagate to the captured patcher reference. Tooltip on the node
   warns about this.
+
+  Correct (LoraLoader → Icarus → KSampler):
+
+  ![LoRA placed before Icarus — works](screenshots/Lora%20Before%20Icarus.png)
+
+  Wrong (Icarus → LoraLoader → KSampler) — LoRA only affects the
+  front-half blocks; the back-half running on Daedalus never sees it:
+
+  ![LoRA placed after Icarus — back half misses it](screenshots/Lora%20After%20Icarus.png)
 - **Decreasing `n_blocks_remote` requires a ComfyUI restart.**
   The client slim-load strips back-half block weights in place to free
   VRAM (the whole point — the server already has those blocks, the
