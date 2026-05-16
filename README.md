@@ -210,6 +210,24 @@ Set on the `Icarus` node:
 Queue a generation. Server log shows one `[server] forward …` line
 per timestep, with byte counts. Done.
 
+#### Tip: FLUX.2 Dev + the FLUX.2 turbo LoRA
+
+If you're running FLUX.2 Dev with the FLUX.2 turbo LoRA (the
+distillation LoRA that lets you sample in 4 steps instead of the
+default ~30), the cleanest setup is a **two-sided load**:
+
+1. Load the turbo LoRA on the **server** via Daedalus's GUI LoRA
+   picker → applies to the back-half blocks server-side.
+2. Place a `LoraLoader` for the same turbo LoRA in the workflow
+   to the **RIGHT of the Icarus node** (i.e. between Icarus and
+   KSampler) → applies to the front-half blocks locally.
+
+This covers the whole model with the turbo LoRA without paying to
+ship it across the wire on every workflow change. The "after Icarus"
+position is the trick that makes it work — `forward_client_loras`
+deliberately doesn't capture post-Icarus patches (so they stay
+local-only), and the server already has its copy from step 1.
+
 ---
 
 ## Quick start — same machine, two GPUs (no NVLink)
