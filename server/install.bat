@@ -155,7 +155,7 @@ echo         run_server_gui.bat   ^(Tkinter UI -- recommended for first run^)
 echo         run_server.bat       ^(headless; edit N_BLOCKS at the top first^)
 echo.
 echo  The server listens on 0.0.0.0:7777 by default. Tell the
-echo  ComfyUI client this host's LAN/Tailscale IP and that port.
+echo  ComfyUI client this host's LAN/VPN IP and that port.
 echo.
 
 REM Hold the window open so a double-clicked install lets you read the
