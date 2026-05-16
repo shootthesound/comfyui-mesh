@@ -117,10 +117,20 @@ def compute_constants_session_id(
 ) -> str:
     """Compute a stable id for a set of constant tensors + their meta.
 
-    Uses `id(t)` for content fingerprinting — within one ComfyUI process
-    the text-encoder output and PE tensors are the SAME Python objects
-    across all timesteps of a generation, so id-equality is a cheap
-    proxy for content-equality without paying a GPU→CPU sync per call.
+    Fingerprints each tensor by sampling 8 elements at fixed positions
+    (start / quarter / mid / 3-quarter / end + 3 random-ish) — enough
+    entropy to distinguish text contexts and PE tensors across
+    generations, cheap enough to call every timestep.
+
+    Why not `id(t)` (the original attempt): ComfyUI's outer model
+    forward re-runs `_prepare_positional_embeddings` on every timestep,
+    so the PE tensors get fresh allocations every step. id() differed
+    every call, cache missed every call — observed in production.
+
+    Why not full content hash: would require copying the entire tensor
+    to CPU which dominates the wire-save the cache is meant to provide.
+    8-element samples per tensor totals ~32 bytes of CPU sync across
+    ~12 constants → sub-millisecond, indistinguishable in the trace.
 
     Hashes alongside: shape + dtype (so a resolution change between
     generations invalidates), the constants-relevant meta values
@@ -132,7 +142,24 @@ def compute_constants_session_id(
         h.update(name.encode())
         h.update(str(tuple(t.shape)).encode())
         h.update(str(t.dtype).encode())
-        h.update(str(id(t)).encode())
+        n = t.numel()
+        if n > 0:
+            flat = t.detach().flatten()
+            # Sample positions: start, 1/4, 1/2, 3/4, end, plus three
+            # offset reads to catch tensors that share boundary values
+            # but differ inside.
+            positions = sorted({
+                0,
+                n // 4,
+                n // 2,
+                (3 * n) // 4,
+                n - 1,
+                min(7, n - 1),
+                min(n // 3, n - 1),
+                min((2 * n) // 5, n - 1),
+            })
+            sample = flat[positions].contiguous().cpu().numpy().tobytes()
+            h.update(sample)
     # Constant-relevant meta: pe_split_mode (per-key bool), flags
     # (transformer_options run_vx etc), and the subset of none_keys that
     # are constant-keys. Per-timestep meta (compressed, non-constant
