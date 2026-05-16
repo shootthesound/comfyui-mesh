@@ -283,10 +283,24 @@ have to hunt the console for status:
   remembered defaults.
 
 - **Transparent reconnect** if the server dies and comes back. The
-  cached client socket gets reset, the next queue reopens it — no
-  ComfyUI relaunch needed. Works whether the server crashed,
-  restarted itself for a reconfigure, or you killed and re-launched
-  it manually.
+  cached client socket gets reset; the connection indicator's
+  background poll attempts a fresh handshake every few seconds and
+  flips green automatically the moment the server is back — no need
+  to queue a workflow first to see whether you're back online. Works
+  whether the server crashed, restarted itself for a reconfigure, or
+  you killed and re-launched it manually.
+
+- **Per-control tooltips** on hover. Every parameter has a one-line
+  explanation that ComfyUI surfaces when your mouse rests on the
+  pill. Useful for picking sensible values without hunting the docs.
+
+- **❓ Help button** at the very bottom of the node opens an inline
+  modal with categorised tips: connection troubleshooting, the
+  Confirm-restart flow, LoRA workflow ordering, codec quality
+  trade-offs, and the ComfyUI-version-mismatch gotcha (which we
+  can't auto-detect because the wire protocol doesn't carry the
+  server's ComfyUI version — `update_comfy.bat` on the server side
+  is the standing fix).
 
 ---
 
