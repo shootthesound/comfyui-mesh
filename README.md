@@ -23,10 +23,11 @@ through a codec I designed to abstract model activation data.**
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
-If this project saves you buying a new GPU, please consider donating — it helps me support more models beyond FLUX and keep this thing maintained.
+If this project saves you buying a new GPU, please consider donating — it helps me support more models beyond the FLUX.2 family and keep this thing maintained.
 
-FLUX.2 Klein 9B (a 9 GB model) running on one Nvidia card with its
-back half offloaded to another Nvidia card elsewhere on the LAN.
+FLUX.2 Klein 9B / FLUX.2 Dev (9 GB and ~22 GB respectively) running
+on one Nvidia card with its back half offloaded to another Nvidia
+card elsewhere on the LAN.
 **Any modern Nvidia GPU with NVENC works** — 3080 + 4080, 4070 + 5070,
 5090 + 4090, whatever you have. The two cards don't have to be the
 same model or generation. Or two cards in the same box without NVLink.
