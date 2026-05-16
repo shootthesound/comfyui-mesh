@@ -281,6 +281,12 @@ The LTX node has a deliberately smaller surface than the FLUX one:
 | `codec_mode` | `Nvenc LTX` | `Nvenc LTX` = LTX-tuned codec (NVENC HEVC + per-channel percentile-clip quant + sparse exact-correction of outliers; near-raw quality, ~3× smaller than raw, roughly the same wall-clock as raw on gigabit). `nvenc` = plain NVENC HEVC, lighter wire, can show contrast crush on LTX. `raw` = uncompressed bf16. |
 | `forward_client_loras` | ON | Same semantics as the FLUX node |
 
+**Use `Nvenc LTX`** — it's the best speed/quality balance for the LTX
+node (the tuned settings are pinned internally). If you ever need to
+A/B against an uncompressed baseline, switch to `raw`. The plain
+`nvenc` option is kept for completeness but isn't recommended for
+LTX content.
+
 There are no `codec_qp` / `codec_lossless` / `codec_tile_dim` widgets
 on the LTX node — those are pinned internally at the sweet spot that
 works for LTX activations.
