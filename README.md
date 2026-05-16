@@ -340,6 +340,47 @@ hundreds of MB of wasted wire time for a LoRA that never changes.
 The server-side slot is the right home for any "always-on" LoRA
 you'd otherwise forward.
 
+#### ⚠️ Big LTX LoRAs — load on server + LoraLoader to the RIGHT of Icarus LTX
+
+LTX-family LoRAs are frequently **large** — often >500 MB, sometimes
+into the gigabytes. Shipping a LoRA that big across the wire on
+every session change adds seconds (or tens of seconds on slower
+links) to the generation, AND adds memory pressure on the server
+that can push the codec encode into a slow regime — same mechanism
+as the FLUX turbo-LoRA gotcha further up.
+
+The right pattern for a LoRA >~500 MB is **two-sided load** that
+never crosses the wire:
+
+1. **On the server:** load it via the Daedalus LTX GUI's primary
+   LoRA row (the one above the Distill LoRA row).
+2. **On the client:** place a `LoraLoader` for the same file
+   **to the RIGHT of Icarus LTX** (i.e. between Icarus LTX and
+   KSampler). The post-Icarus position means the LoRA applies
+   to the front-half blocks locally and `forward_client_loras`
+   never sees it.
+
+Net result: the whole model gets the LoRA, but the wire only ever
+carries activations.
+
+For sub-500 MB LoRAs the "LoraLoader BEFORE Icarus LTX +
+`forward_client_loras=ON`" pattern is fine and convenient — the
+encoded blob ships once per session-id change, subsequent timesteps
+within the gen send only the small id.
+
+#### Server VRAM headroom — 16+ GB recommended
+
+A practical note on sizing the back-half host: **with 16+ GB of
+VRAM the LTX server has comfortable room** to slim-load 11–24
+back-half blocks AND stack one or two LoRAs on top. On a 12 GB
+card (or smaller) you may need to lower `n_blocks_remote` to ~10
+or fewer to fit a sizeable LoRA without bumping into ComfyUI's
+dynamic-offload heuristics, which start swapping weights in and
+out of VRAM mid-generation and can slow the per-step forward
+noticeably. Symptom to watch for: per-step forward time on the
+server jumping from ~1–2 s to ~5–10 s once a big LoRA is applied
+— that's the offload thrash signature, not anything we ship.
+
 ### Server side
 
 The server side ships **two** GUIs side-by-side in the same `server/`
