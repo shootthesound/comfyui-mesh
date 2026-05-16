@@ -557,7 +557,190 @@ def apply_server_lora(patcher, lora_path: Path, strength: float) -> int:
 
 
 # ---------------------------------------------------------------------
-# Forward pass — back-half (double_blocks + optional single_blocks)
+# Forward pass + wire path — LTX-AV
+# ---------------------------------------------------------------------
+
+@torch.no_grad()
+def forward_back_half_ltx(model, payload: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run all of the server's loaded `transformer_blocks` for the LTX-AV
+    back-half. `payload` is the reconstructed block_wrap args dict (see
+    payload_ltx.reconstruct_payload). Returns the updated (vx, ax).
+
+    transformer_options inside payload is the minimal flag-only dict
+    rebuilt from the wire metadata — enough for the block forward's
+    `.get(run_vx, True)` lookups but stripped of ComfyUI hooks.
+    """
+    vx, ax = payload["img"]
+    kwargs = {k: v for k, v in payload.items() if k != "img"}
+    for block in model.transformer_blocks:
+        vx, ax = block((vx, ax), **kwargs)
+    return vx, ax
+
+
+def _decode_request_tensors_ltx(header: dict, blobs: list[bytes], device: torch.device):
+    """Decode an LTX `forward_ltx_blocks` request. Returns
+    (payload_dict_ready_for_block_forward, client_lora_blob_or_None).
+    """
+    import payload_ltx
+
+    wires = header["tensors"]
+    by_name: dict[str, torch.Tensor] = {}
+    client_lora_blob: bytes | None = None
+    for w, b in zip(wires, blobs):
+        if w.get("encoding") == "lora_safetensors":
+            client_lora_blob = b
+            continue
+        name = w["name"]
+        by_name[name] = codec.decode(w, b, device=device)
+
+    ltx_meta = header.get("ltx_meta", {}) or {}
+    payload = payload_ltx.reconstruct_payload(ltx_meta, by_name)
+    return payload, client_lora_blob
+
+
+def _encode_response_tensors_ltx(vx: torch.Tensor, ax: torch.Tensor):
+    """Encode the LTX forward response. Raw for both vx and ax in this
+    iteration — codec layering for vx/ax is a follow-up once correctness
+    is proven."""
+    return [
+        codec.encode_raw("vx", vx),
+        codec.encode_raw("ax", ax),
+    ]
+
+
+def serve_ltx(patcher, host: str, port: int, device: torch.device,
+              server_lora_path: Path = None, server_lora_strength: float = 1.0):
+    """LTX-AV TCP loop. Mirrors the FLUX `serve()` shape but dispatches
+    on `forward_ltx_blocks` and uses the LTX block forward signature.
+    Reuses the FLUX hello / reconfigure messages — they're protocol-
+    level and don't care about the variant."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, port))
+    s.listen(1)
+
+    model = patcher.model.diffusion_model
+    n_loaded = len(model.transformer_blocks)
+    print(f"[server] READY — listening on {host}:{port} "
+          f"(LTX-AV, n_blocks={n_loaded} transformer_blocks)")
+
+    current_client_lora_session: str | None = None
+
+    while True:
+        conn, addr = s.accept()
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        print(f"[server] client connected: {addr}")
+        try:
+            while True:
+                header, blobs = protocol.recv_message(conn)
+                kind = header.get("kind")
+
+                if kind == "hello":
+                    protocol.send_message(conn, {
+                        "kind": "hello_ack",
+                        "tensors": [],
+                        "server_info": {
+                            "device": str(device),
+                            "variant": "ltxav",
+                            "n_transformer_blocks": n_loaded,
+                            "n_blocks": n_loaded,
+                            "n_total_loaded": n_loaded,
+                        },
+                    }, [])
+
+                elif kind == "reconfigure":
+                    new_n_blocks = int(header.get("n_blocks", n_loaded))
+                    print(f"[server] RESTARTING: reconfigure request "
+                          f"--n-blocks {n_loaded} -> {new_n_blocks}")
+                    if new_n_blocks < n_loaded:
+                        print(
+                            "[server] *** NOTE *** decreasing n_blocks requires the "
+                            "CLIENT to restart ComfyUI too — stripped client weights "
+                            "are session-scoped and only reload from disk at startup."
+                        )
+                    protocol.send_message(conn, {
+                        "kind": "reconfigure_ack",
+                        "tensors": [],
+                        "new_n_blocks": new_n_blocks,
+                    }, [])
+                    try: conn.close()
+                    except Exception: pass
+                    try: s.close()
+                    except Exception: pass
+                    handoff = Path(__file__).parent / "mesh_server_ltx_reconfig.tmp"
+                    try:
+                        handoff.write_text(
+                            json.dumps({"n_blocks": new_n_blocks}),
+                            encoding="utf-8",
+                        )
+                        print(f"[server] wrote {handoff.name} for GUI relaunch")
+                    except Exception as e:
+                        print(f"[server] could not write {handoff.name}: {e}")
+                    sys.stdout.flush()
+                    sys.exit(0)
+
+                elif kind == "forward_ltx_blocks":
+                    client_start_block = int(header.get("start_block", 0))
+                    t0 = time.time()
+                    payload, client_lora_blob = _decode_request_tensors_ltx(header, blobs, device)
+                    t_decode = time.time() - t0
+
+                    incoming_session = header.get("client_lora_session", "") or ""
+                    if incoming_session and incoming_session != current_client_lora_session:
+                        print(f"[server] client LoRA session change: "
+                              f"{current_client_lora_session!r} -> {incoming_session!r}")
+                        _unapply_client_lora(patcher)
+                        if server_lora_path is not None:
+                            apply_server_lora(patcher, server_lora_path, server_lora_strength)
+                        if incoming_session != "empty" and client_lora_blob:
+                            _apply_client_lora(patcher, client_lora_blob, incoming_session, device)
+                        current_client_lora_session = incoming_session
+                    elif incoming_session == "" and current_client_lora_session is not None:
+                        print(f"[server] client LoRA forwarding stopped — unpatching")
+                        _unapply_client_lora(patcher)
+                        if server_lora_path is not None:
+                            apply_server_lora(patcher, server_lora_path, server_lora_strength)
+                        current_client_lora_session = None
+
+                    t0 = time.time()
+                    vx_out, ax_out = forward_back_half_ltx(model, payload)
+                    t_forward = time.time() - t0
+
+                    t0 = time.time()
+                    wire_outs = _encode_response_tensors_ltx(vx_out, ax_out)
+                    t_encode = time.time() - t0
+
+                    resp_header = {
+                        "kind": "forward_ltx_blocks_response",
+                        "tensors": [w.to_header() for w in wire_outs],
+                        "timings_ms": {
+                            "decode": t_decode * 1000,
+                            "forward": t_forward * 1000,
+                            "encode": t_encode * 1000,
+                        },
+                    }
+                    protocol.send_message(conn, resp_header, [w.bytes_payload for w in wire_outs])
+                    print(f"[server] forward LTX {n_loaded} blocks "
+                          f"(client said start={client_start_block}): "
+                          f"decode {t_decode*1000:.1f} ms  fwd {t_forward*1000:.1f} ms  enc {t_encode*1000:.1f} ms  "
+                          f"in {sum(len(b) for b in blobs)/1024/1024:.2f} MB  "
+                          f"out {sum(len(w.bytes_payload) for w in wire_outs)/1024/1024:.2f} MB")
+                else:
+                    print(f"[server] unknown request kind: {kind}")
+                    break
+        except (ConnectionError, OSError) as e:
+            print(f"[server] client disconnected: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------
+# Forward pass — FLUX back-half (double_blocks + optional single_blocks)
+# Kept in this file from the duplicate; unused by the LTX serve loop
+# but referenced by `serve()` below if the FLUX path is ever needed.
 # ---------------------------------------------------------------------
 
 @torch.no_grad()
@@ -953,12 +1136,9 @@ def main():
 
     print("=" * 64)
     print("ComfyUI Mesh : Daedalus LTX (experimental branch)")
-    print("Slim-load: IMPLEMENTED. LTXAV detection + indexing: IMPLEMENTED.")
-    print("Wire protocol (forward_back_half_ltx + per-block payload):")
-    print("    NOT YET IMPLEMENTED.")
-    print("Server will load the model + apply LoRA if given, then EXIT")
-    print("before opening the TCP listener. Use this run to verify that")
-    print("slim-load works for your checkpoint before the wire path lands.")
+    print("Wire path: forward_ltx_blocks + per-block payload (raw, no codec).")
+    print("Codec compression for vx/ax is a follow-up once correctness is")
+    print("validated against a single-GPU baseline.")
     print("=" * 64)
 
     patcher = load_ltx_av(args.weights, device, dtype, n_blocks=args.n_blocks)
@@ -967,13 +1147,11 @@ def main():
             raise FileNotFoundError(f"LoRA file not found: {args.lora}")
         apply_server_lora(patcher, args.lora, args.lora_strength)
 
-    print()
-    print("[server] LTX slim-load smoke-test complete; exiting (wire path WIP).")
-    print("[server] Next iteration will wire up serve() with the LTX-AV per-")
-    print("[server] block payload (~13 tensors per timestep) — see WIP notes")
-    print("[server] in mesh_server_ltx.py and mesh_node_ltx.py for the design.")
-    import sys as _sys
-    _sys.exit(0)
+    serve_ltx(
+        patcher, args.bind, args.port, device,
+        server_lora_path=args.lora,
+        server_lora_strength=args.lora_strength,
+    )
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ from . import codec
 from . import protocol
 from . import vec_io
 from . import lora_io
+from . import payload_ltx
 
 
 class MeshReconnect(Exception):
@@ -434,6 +435,70 @@ class MeshClient:
 
         return img_back, txt_back
 
+    def call_ltx_blocks(
+        self,
+        *,
+        args: dict,                          # block_wrap args from patches_replace
+        start_block: int,
+        client_lora_session: str = "",
+        client_lora_blob: bytes = b"",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Send an LTX-AV `forward_ltx_blocks` request and receive the
+        post-back-half (vx, ax). All tensors raw in this iteration; codec
+        compression of vx/ax is a follow-up."""
+        sock = self._ensure_open()
+        device = args["img"][0].device
+
+        meta, named = payload_ltx.flatten_payload(args)
+
+        wire_tensors = []
+        blobs = []
+        for name, t in named:
+            w = codec.encode_raw(name, t)
+            wire_tensors.append(w.to_header())
+            blobs.append(w.bytes_payload)
+
+        if client_lora_blob:
+            wire_tensors.append({
+                "name": "client_lora",
+                "encoding": "lora_safetensors",
+                "size": len(client_lora_blob),
+                "dtype": "bytes",
+                "shape": [],
+                "extra": {"session_id": client_lora_session},
+            })
+            blobs.append(client_lora_blob)
+
+        header = {
+            "kind": "forward_ltx_blocks",
+            "tensors": wire_tensors,
+            "start_block": int(start_block),
+            "ltx_meta": meta,
+            "client_lora_session": client_lora_session,
+        }
+
+        t0 = time.time()
+        try:
+            protocol.send_message(sock, header, blobs)
+            resp_header, resp_blobs = protocol.recv_message(sock)
+        except (OSError, EOFError) as e:
+            print(f"[mesh] connection lost to {self.host}:{self.port} ({e}); will reconnect")
+            self.close()
+            self._last_sent_lora_session = ""
+            raise MeshReconnect(str(e)) from e
+        elapsed = time.time() - t0
+
+        if resp_header.get("kind") != "forward_ltx_blocks_response":
+            raise RuntimeError(f"unexpected response kind {resp_header!r}")
+
+        wires = resp_header["tensors"]
+        if len(wires) < 2:
+            raise RuntimeError(f"response missing vx/ax; got {len(wires)} tensors")
+        vx_back = codec.decode(wires[0], resp_blobs[0], device=device)
+        ax_back = codec.decode(wires[1], resp_blobs[1], device=device)
+
+        return vx_back, ax_back
+
 
 def _dumps_len(header: dict) -> bytes:
     import json
@@ -566,6 +631,47 @@ def _make_double_passthrough():
     already ran them, return inputs unchanged."""
     def passthrough(args, extras):
         return {"img": args["img"], "txt": args["txt"]}
+    return passthrough
+
+
+def _make_ltx_block_replacement(
+    client: "MeshClient",
+    split_index: int,
+    n_transformer_blocks: int,
+    n_remote: int,
+):
+    """Replacement callback for LTX-AV transformer_blocks[split_index].
+    Ships the full block_wrap args payload to the server, gets back the
+    post-back-half (vx, ax), and returns it in the block_wrap-expected
+    `{"img": (vx, ax)}` form.
+
+    No codec encoding in this iteration (raw on the wire); no client-
+    LoRA forwarding yet — both are follow-ups once correctness is proven.
+    """
+    def replace_at_split(args, extras):
+        for attempt in (1, 2):
+            try:
+                vx_back, ax_back = client.call_ltx_blocks(
+                    args=args,
+                    start_block=split_index,
+                )
+            except MeshReconnect:
+                if attempt == 2:
+                    raise
+                print("[mesh] retrying after reconnect")
+                continue
+            return {"img": (vx_back, ax_back)}
+
+    return replace_at_split
+
+
+def _make_ltx_passthrough():
+    """No-op replacement for LTX transformer_blocks AFTER the split point.
+    Server already ran them in the single forward_ltx_blocks call; the
+    client's loop is just stepping over the remaining indices. Returns
+    the (vx, ax) tuple unchanged."""
+    def passthrough(args, extras):
+        return {"img": args["img"]}
     return passthrough
 
 
@@ -875,80 +981,49 @@ class MeshSplitLTX:
     OUTPUT_NODE = False
 
     def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim, forward_client_loras, unique_id=None):
-        # ----- LTX wire path: WIP -----
-        # The body below is the verbatim FLUX configure() that ran in the
-        # cloned file. It WILL NOT correctly handle an LTX model — the
-        # block intercept keys, the wire payload tensor list, and the
-        # server's forward signature are all FLUX-shaped.
-        #
-        # What's needed to make this real (next iteration):
-        #   1. Detect LTXVModel vs LTXAVModel from model.model.diffusion_model
-        #      class name. Raise clearly if AV (15-tensor wire payload —
-        #      bigger lift). LTXV is the V0 target.
-        #   2. Replace `n_double_blocks / n_single_blocks` math with the
-        #      flat `transformer_blocks` list (28 layers for LTXV, 48 for
-        #      LTXAV).
-        #   3. set_model_patch_replace still uses ("double_block", i) — the
-        #      key is identical across FLUX + LTX in ComfyUI, only the
-        #      wire payload assembled inside the replacement callback
-        #      changes.
-        #   4. LTX block_wrap args: img / context / attention_mask /
-        #      timestep / pe / self_attention_mask / prompt_timestep
-        #      (vs FLUX's img / txt / vec / vec_orig / pe / attn_mask).
-        #      Need a vec_io_ltx flatten/unflatten or extend vec_io.
-        #   5. Server-side forward_back_half_ltx must call
-        #      transformer_blocks[i] with the LTX signature, returning
-        #      just the updated img (not (img, txt) like FLUX).
-        #
-        # Until then, raise so users don't get silent wrong output.
-        raise NotImplementedError(
-            "ComfyUI Mesh : Icarus LTX — wire path is WIP on the "
-            "`experimental` branch and not yet functional. Use the "
-            "FLUX node (Icarus) for FLUX.2 Klein 9B / Dev today; LTX "
-            "support is being scaffolded. Track progress on the "
-            "experimental branch."
-        )
-        # Reach into the diffusion model to learn block counts
+        # ----- LTX wire path (first cut: raw tensors, no strip, no client-LoRA forwarding) -----
+        # The codec_*, forward_client_loras knobs are accepted for UI
+        # parity with the FLUX node but ignored in this iteration —
+        # they layer on top once correctness is validated end-to-end.
+
         diffusion = model.model.diffusion_model
-        n_double_blocks = len(diffusion.double_blocks)
-        n_single_blocks = len(diffusion.single_blocks)
-        n_total_blocks = n_double_blocks + n_single_blocks
-        if not (0 <= n_blocks_remote <= n_total_blocks):
-            raise ValueError(
-                f"n_blocks_remote {n_blocks_remote} out of range; model has "
-                f"{n_double_blocks} doubles + {n_single_blocks} singles "
-                f"= {n_total_blocks} total"
+        diff_cls_name = type(diffusion).__name__
+        if not hasattr(diffusion, "transformer_blocks"):
+            raise RuntimeError(
+                f"MeshSplitLTX expects an LTX model with .transformer_blocks; got "
+                f"{diff_cls_name}. Use MeshSplitFlux (Icarus) for FLUX checkpoints."
+            )
+        # In this iteration we only handle LTXAV (audio+video). LTXV (video-
+        # only) has a smaller block_wrap signature and a different
+        # transformer_blocks shape — separate iteration.
+        if diff_cls_name != "LTXAVModel":
+            raise RuntimeError(
+                f"MeshSplitLTX currently supports LTXAVModel only; got "
+                f"{diff_cls_name}. Video-only LTXV support is a separate "
+                f"iteration on the experimental branch."
             )
 
-        # Translate the unified n_blocks_remote into per-stack offload counts.
-        # Doubles get offloaded first; once n_blocks_remote exceeds n_double,
-        # the surplus eats into singles (front-to-back).
-        if n_blocks_remote <= n_double_blocks:
-            n_double_remote = n_blocks_remote
-            n_single_remote = 0
-        else:
-            n_double_remote = n_double_blocks
-            n_single_remote = n_blocks_remote - n_double_blocks
+        n_transformer_blocks = len(diffusion.transformer_blocks)
+        if not (0 <= n_blocks_remote <= n_transformer_blocks):
+            raise ValueError(
+                f"n_blocks_remote {n_blocks_remote} out of range; model has "
+                f"{n_transformer_blocks} transformer_blocks"
+            )
 
-        # Where the wire hook fires in the doubles loop. If no doubles are
-        # offloaded (n_double_remote == 0), we don't fire there at all and
-        # the wire hook moves down to single_block[0].
-        split_index = n_double_blocks - n_double_remote
+        # Split index: the back-half [split_index..n_transformer_blocks) runs
+        # on the server. n_blocks_remote=0 means everything runs locally.
+        split_index = n_transformer_blocks - n_blocks_remote
 
-        # Open / reuse the client so the user gets a connection error
-        # at queue-time rather than mid-sample.
+        # Open / reuse the client so connection errors surface at queue-
+        # time rather than mid-sample.
         client = _get_client(remote_host, remote_port)
-        client._ensure_open()
+        if n_blocks_remote > 0:
+            client._ensure_open()
 
-        # Block KSampler if the client's n_blocks_remote disagrees with
-        # the server's currently-running --n-blocks. The JS surfaces a
-        # 'Confirm: restart server with N=X' button that POSTs to
-        # /mesh/ltx/reconfigure; once the server execvs and re-handshakes,
-        # this check passes and the run proceeds. We only check when
-        # n_blocks_remote > 0 (n=0 means 'no mesh', client runs
-        # everything locally and the server isn't consulted).
-        if n_blocks_remote > 0 and client.server_n_blocks is not None:
-            if client.server_n_blocks != n_blocks_remote:
+            # Block KSampler if client/server n_blocks disagree. The JS
+            # extension surfaces the Confirm button which POSTs to
+            # /mesh/ltx/reconfigure.
+            if client.server_n_blocks is not None and client.server_n_blocks != n_blocks_remote:
                 pending_msg = (
                     f"n_blocks_remote ({n_blocks_remote}) differs from server "
                     f"({client.server_n_blocks}). Click the Confirm button to "
@@ -958,90 +1033,28 @@ class MeshSplitLTX:
                 _send_node_message(unique_id, "warn", pending_msg)
                 raise MeshServerNeedsReconfigure(pending_msg)
 
-        # Capture vec_orig via a forward_pre_hook on the modulation module —
-        # the server uses it to compute single-block modulation locally.
-        vec_orig_capture: dict = {"vec_orig": None}
-        _install_vec_orig_hook(diffusion, vec_orig_capture)
-
-        # Free VRAM held by back-half block weights. This mutates the
-        # shared diffusion_model in place — clone() does NOT deep-copy
-        # the nn.Module, so the change is visible to any cached MODEL
-        # reference too. The trade: if the user removes this node or
-        # changes n_blocks_remote, they must reload the model (the
-        # original weights are gone). _strip_diffusion_back_half is
-        # idempotent for identical configs and raises clearly otherwise.
-        if n_blocks_remote > 0:
-            try:
-                stripped = _strip_diffusion_back_half(diffusion, n_double_remote, n_single_remote)
-            except MeshDecreaseNeedsReload as e:
-                # Surface the decrease-needs-restart message inline on
-                # the node so the user sees it without scrolling the
-                # console. Then re-raise so ComfyUI flags this run.
-                _send_node_message(unique_id, "warn", str(e))
-                raise
-            # Clear any prior banner from this node — strip succeeded.
-            _send_node_message(unique_id, "clear", "")
-            if stripped:
-                print(f"[mesh] stripped {n_double_remote} double_blocks + "
-                      f"{n_single_remote} single_blocks from client VRAM")
-
-        # ModelPatcher copy + register the per-block overrides via the
-        # canonical comfy.model_patcher API. Using set_model_patch_replace
-        # rather than mutating model_options directly so we don't fight
-        # the ModelPatcher's copy-on-write semantics.
+        # ModelPatcher copy + register the per-block overrides. Note that
+        # ComfyUI uses the SAME key tuple ("double_block", i) for LTX even
+        # though LTX has no double/single split — that's just an artefact
+        # of ComfyUI's naming, see comfy/ldm/lightricks/av_model.py line
+        # 916: `if ("double_block", i) in blocks_replace:`.
         m = model.clone()
 
-        # Move patches targeting now-stripped blocks out of m.patches so
-        # ComfyUI's patch_model doesn't try to apply them to the stubs.
-        # The wire forwarder reads them back from _mesh_back_half_patches.
         if n_blocks_remote > 0:
-            _split_back_half_patches(m, n_double_remote, n_single_remote, n_double_blocks)
-
-        # Capture the (post-clone) patcher reference so the per-call
-        # closure can introspect its .patches dict at sample time. This
-        # is the patcher that downstream nodes (KSampler) will see; if
-        # LoraLoader runs BEFORE this node, m.patches has the LoRA
-        # patches at this point and they propagate via clone().
-        # If LoraLoader runs AFTER, this reference won't see those
-        # later-added patches — see the tooltip on forward_client_loras.
-        patcher_capture: dict = {"patcher": m}
-
-        if n_blocks_remote > 0:
-            replace_at_split = _make_block_replacement(
-                client, split_index, n_double_blocks, n_single_blocks,
-                n_double_remote, n_single_remote,
-                codec_mode, codec_qp, codec_lossless, codec_tile_dim,
-                forward_client_loras,
-                patcher_capture,
-                vec_orig_capture,
+            replace_at_split = _make_ltx_block_replacement(
+                client, split_index, n_transformer_blocks, n_blocks_remote,
             )
-            double_pass = _make_double_passthrough()
-            single_pass = _make_single_passthrough()
+            passthrough = _make_ltx_passthrough()
+            m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
+            for i in range(split_index + 1, n_transformer_blocks):
+                m.set_model_patch_replace(passthrough, "dit", "double_block", i)
 
-            if n_double_remote > 0:
-                # Wire hook fires inside the double_blocks loop
-                m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
-                for i in range(split_index + 1, n_double_blocks):
-                    m.set_model_patch_replace(double_pass, "dit", "double_block", i)
-            else:
-                # No doubles offloaded — wire hook moves to single_block[0]
-                # (this branch is only reachable if 0 < n_blocks_remote <= n_single_blocks
-                # AND n_double_remote == 0, which by our mapping means ... never.
-                # We leave this branch unreachable for the current mapping but
-                # the structure supports a future "singles-only" mode.)
-                pass
+            _send_node_message(unique_id, "clear", "")
 
-            # If the server is also running some single_blocks, passthrough
-            # those on the client so its local copies don't run again.
-            for i in range(n_single_remote):
-                m.set_model_patch_replace(single_pass, "dit", "single_block", i)
-        # n_blocks_remote == 0: no patches; entire model runs locally
-
-        print(f"[mesh] offloading {n_double_remote}/{n_double_blocks} doubles + "
-              f"{n_single_remote}/{n_single_blocks} singles "
-              f"(double_block intercept at index {split_index}); "
+        print(f"[mesh] LTX offloading {n_blocks_remote}/{n_transformer_blocks} transformer_blocks "
+              f"(intercept at index {split_index}); "
               f"server={remote_host}:{remote_port}; "
-              f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless} tile_dim={codec_tile_dim}")
+              f"wire=raw (codec layer deferred to next iteration)")
 
         return (m,)
 
