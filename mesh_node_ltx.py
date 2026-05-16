@@ -980,35 +980,17 @@ class MeshSplitLTX:
                                            )}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535,
                                         "tooltip": "TCP port the back-half server is listening on. Default 7777."}),
-                "codec_mode": (["raw", "nvenc", "nvenc_clipsparse"], {"default": "nvenc",
+                "codec_mode": (["Nvenc LTX", "raw"], {"default": "Nvenc LTX",
                                                   "tooltip": (
                                                       "How activations get put on the wire. "
-                                                      "'nvenc' = NVENC HEVC compresses 3-10× before sending — "
-                                                      "the right choice for any slow wire (LAN, Tailscale, "
-                                                      "residential broadband). "
-                                                      "'nvenc_clipsparse' = same NVENC pipeline + per-channel "
+                                                      "'Nvenc LTX' = LTX-tuned codec: NVENC HEVC + per-channel "
                                                       "percentile-clip quant + sparse exact-correction of "
-                                                      "outliers. Use on LTX if 'nvenc' shows contrast crush "
-                                                      "or color shift. Same per-call latency as 'nvenc', "
-                                                      "~1-2× the wire bytes; recovers within-channel "
-                                                      "precision the linear-quant 'nvenc' mode loses on "
-                                                      "heavy-tailed distributions. "
-                                                      "'raw' = uncompressed bf16 — only better when the wire "
-                                                      "is faster than the codec encode/decode latency, i.e. "
-                                                      "PCIe between two GPUs in the same machine."
+                                                      "outliers. Near-raw quality, ~3× smaller than raw, "
+                                                      "roughly the same wall-clock as raw on gigabit. "
+                                                      "'raw' = uncompressed bf16 — only meaningfully faster "
+                                                      "when the wire is faster than the codec encode/decode "
+                                                      "latency, e.g. PCIe between two GPUs in the same machine."
                                                   )}),
-                "codec_qp": ("INT", {"default": 18, "min": 0, "max": 51,
-                                     "tooltip": "Lower = higher quality / less compression. 10 = near-lossless. 18 = sharp (default). Towards 28 the image gets noticeably softer with visible noise."}),
-                "codec_lossless": ("BOOLEAN", {"default": False,
-                                               "tooltip": "Use NVENC's lossless tuning (overrides QP, much larger bitstream)."}),
-                "codec_tile_dim": ([1, 2, 4, 8], {"default": 8,
-                                                   "tooltip": (
-                                                       "How many channels to tile per Y/U/V plane in each NVENC frame. "
-                                                       "Bigger tiles = fewer larger codec frames per encode = much "
-                                                       "faster wall clock. 1=legacy (~600ms/round-trip), "
-                                                       "4=balanced (~130ms), 8=default & most aggressive (~110ms). "
-                                                       "Compression ratio is essentially unchanged across values."
-                                                   )}),
                 "forward_client_loras": ("BOOLEAN", {"default": True,
                                                        "tooltip": (
                                                            "When ON, any LoRAs loaded BEFORE this node in the workflow "
@@ -1036,7 +1018,14 @@ class MeshSplitLTX:
     CATEGORY = "mesh"
     OUTPUT_NODE = False
 
-    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, codec_qp, codec_lossless, codec_tile_dim, forward_client_loras, unique_id=None):
+    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, forward_client_loras, unique_id=None):
+        # The LTX path uses fixed codec params — "Nvenc LTX" mode is the
+        # tuned sweet spot (qp=1 near-lossless on the bulk, lossless=False,
+        # tile_dim=8 max-throughput). Exposing those as separate inputs
+        # only invited misconfiguration.
+        codec_qp = 1
+        codec_lossless = False
+        codec_tile_dim = 8
         # ----- LTX wire path (first cut: raw tensors, no strip, no client-LoRA forwarding) -----
         # The codec_*, forward_client_loras knobs are accepted for UI
         # parity with the FLUX node but ignored in this iteration —
@@ -1111,7 +1100,7 @@ class MeshSplitLTX:
         print(f"[mesh] LTX offloading {n_blocks_remote}/{n_transformer_blocks} transformer_blocks "
               f"(intercept at index {split_index}); "
               f"server={remote_host}:{remote_port}; "
-              f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless} tile_dim={codec_tile_dim}")
+              f"codec={codec_mode}")
 
         return (m,)
 

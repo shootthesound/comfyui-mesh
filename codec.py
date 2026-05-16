@@ -535,7 +535,7 @@ def encode_nvenc_clipsparse(
 
     return WireTensor(
         name=name,
-        encoding="nvenc_clipsparse",
+        encoding="Nvenc LTX",
         bytes_payload=payload,
         dtype_str=str(orig_dtype),
         shape=orig_shape,
@@ -631,7 +631,7 @@ def encode(name: str, tensor: torch.Tensor, mode: str, qp: int = 18, lossless: b
         return encode_raw(name, tensor)
     elif mode == "nvenc":
         return encode_nvenc(name, tensor, qp=qp, lossless=lossless, tile_dim=tile_dim)
-    elif mode == "nvenc_clipsparse":
+    elif mode == "Nvenc LTX":
         return encode_nvenc_clipsparse(name, tensor, qp=qp, tile_dim=tile_dim)
     else:
         raise ValueError(f"unknown codec mode {mode!r}")
@@ -643,7 +643,7 @@ def decode(wire: dict, payload: bytes, device: torch.device) -> torch.Tensor:
         return decode_raw(wire, payload, device)
     elif enc == "nvenc":
         return decode_nvenc(wire, payload, device)
-    elif enc == "nvenc_clipsparse":
+    elif enc == "Nvenc LTX":
         return decode_nvenc_clipsparse(wire, payload, device)
     else:
         raise ValueError(f"unknown wire encoding {enc!r}")
