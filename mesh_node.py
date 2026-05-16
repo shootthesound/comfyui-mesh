@@ -839,13 +839,13 @@ class MeshSplitFlux:
                                      "tooltip": "Lower = higher quality / less compression. 10 = near-lossless. 18 = sharp (default). Towards 28 the image gets noticeably softer with visible noise."}),
                 "codec_lossless": ("BOOLEAN", {"default": False,
                                                "tooltip": "Use NVENC's lossless tuning (overrides QP, much larger bitstream)."}),
-                "codec_tile_dim": ([1, 2, 4, 8], {"default": 4,
+                "codec_tile_dim": ([1, 2, 4, 8], {"default": 8,
                                                    "tooltip": (
                                                        "How many channels to tile per Y/U/V plane in each NVENC frame. "
                                                        "Bigger tiles = fewer larger codec frames per encode = much "
                                                        "faster wall clock. 1=legacy (~600ms/round-trip), "
-                                                       "4=default (~130ms), 8=most aggressive (~110ms). Compression "
-                                                       "ratio is essentially unchanged across values."
+                                                       "4=balanced (~130ms), 8=default & most aggressive (~110ms). "
+                                                       "Compression ratio is essentially unchanged across values."
                                                    )}),
                 "forward_client_loras": ("BOOLEAN", {"default": True,
                                                        "tooltip": (

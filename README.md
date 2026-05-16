@@ -203,7 +203,7 @@ Set on the `Icarus` node:
 - **`remote_host`** = the server's LAN IP, e.g. `192.168.0.18`, or
   Tailscale IP `100.x.x.x`
 - **`remote_port`** = `7777`
-- **`codec_mode`** = `nvenc`, **`codec_qp`** = `18`, **`codec_tile_dim`** = `4`
+- **`codec_mode`** = `nvenc`, **`codec_qp`** = `18`, **`codec_tile_dim`** = `8`
 - **`forward_client_loras`** = **ON** (so any LoraLoader-loaded LoRA
   affects the back half too)
 
@@ -272,7 +272,7 @@ Its parameters:
 | `codec_mode` | `nvenc` | `nvenc` for slow wires (LAN, VPN, residential broadband). `raw` for same-host PCIe (faster than codec encode/decode latency). |
 | `codec_qp` | `18` | NVENC quality. 10=near-lossless, 18=sharp (default), towards 28 the image gets noticeably softer with visible noise |
 | `codec_lossless` | OFF | NVENC lossless tuning (still has uint8 quant floor) |
-| `codec_tile_dim` | `4` | Channels-per-frame tile size. Higher = fewer larger NVENC frames = ~5× faster. 4 is a strong default. |
+| `codec_tile_dim` | `8` | Channels-per-frame tile size. Higher = fewer larger NVENC frames = ~5× faster. 8 is the default; 4 is also fine if you want a touch more codec headroom. |
 | `forward_client_loras` | ON | Ship client-side LoraLoader patches to server so the LoRA effect covers back-half blocks too |
 
 ---
@@ -335,7 +335,7 @@ have to hunt the console for status:
 
 End-to-end wall-clock per generated image. FLUX.2 Klein 9B distilled,
 4 sampler steps, RTX 5090 desktop client + RTX 4090 laptop server,
-gigabit ethernet, `n_blocks_remote = 12`, `tile_dim = 4`.
+gigabit ethernet, `n_blocks_remote = 12`, `tile_dim = 8`.
 
 | Resolution | NVENC `qp = 18` | NVENC lossless | Raw (no codec) |
 |---|---:|---:|---:|
