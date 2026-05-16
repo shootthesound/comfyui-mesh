@@ -28,12 +28,25 @@ _HERE = str(Path(__file__).parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from .mesh_node import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS  # noqa: E402
+from .mesh_node import (  # noqa: E402
+    NODE_CLASS_MAPPINGS as _FLUX_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as _FLUX_NODE_DISPLAY_NAME_MAPPINGS,
+)
+from .mesh_node_ltx import (  # noqa: E402
+    NODE_CLASS_MAPPINGS as _LTX_NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS as _LTX_NODE_DISPLAY_NAME_MAPPINGS,
+)
 
-# Tells ComfyUI to serve the contents of ./web/ alongside the node.
-# `web/mesh.js` registers an extension that listens for our
-# `mesh-message` websocket events and renders inline banners under
-# the matching MeshSplitFlux node.
+NODE_CLASS_MAPPINGS = {**_FLUX_NODE_CLASS_MAPPINGS, **_LTX_NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    **_FLUX_NODE_DISPLAY_NAME_MAPPINGS,
+    **_LTX_NODE_DISPLAY_NAME_MAPPINGS,
+}
+
+# Tells ComfyUI to serve the contents of ./web/ alongside the nodes.
+# `web/mesh.js` handles the FLUX (Icarus) node UI; `web/mesh_ltx.js`
+# handles the LTX (Icarus LTX) node UI. Both listen for `mesh-message`
+# websocket events and render inline banners.
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
