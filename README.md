@@ -4,6 +4,7 @@
 **ComfyUI Mesh : Daedalus** *(the back-half server)*
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+
 If this project saves you buying a new GPU please consider donating to help me support more models beyond flux and maintain.
 
 **Split a diffusion model across two GPUs — either over a gigabit
