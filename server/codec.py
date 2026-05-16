@@ -411,125 +411,11 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
     return flat.reshape(tuple(wire["shape"])).to(dtype=target_dtype)
 
 
-def encode_nvenc_lossless(name: str, tensor: torch.Tensor) -> WireTensor:
-    """True bit-exact NVENC HEVC. Bypasses the per-channel uint8
-    quantize entirely by reinterpreting the tensor as a raw uint8 byte
-    stream, packing those bytes into YUV444 planes, and running NVENC
-    in lossless tuning mode. Decode reverses to the original dtype +
-    shape exactly.
-
-    Compression ratio is modest (typically 1.2–2× vs raw for ML
-    activations — the bf16 exponent byte has structure NVENC can
-    compress; the mantissa byte is near-random). Use when bit-
-    exactness matters more than wire savings.
-
-    Added for the LTX path, which has wider per-channel distributions
-    than FLUX and suffers visible contrast crush from the uint8 quant
-    step even with NVENC's `lossless=True` flag (which only makes the
-    bitstream lossless, not the upstream quant). This codec mode
-    skips that quant.
-    """
-    orig_shape = tuple(tensor.shape)
-    orig_dtype = tensor.dtype
-    itemsize = tensor.element_size()
-
-    # Reinterpret the tensor as a flat uint8 byte stream.
-    contig = tensor.detach().contiguous()
-    flat_u8 = contig.flatten().view(torch.uint8)
-    total_bytes = int(flat_u8.numel())  # == contig.numel() * itemsize
-
-    # Pick frame side adaptively: aim for ~16 frames per encode, bounded
-    # to [HEVC_MIN_DIM, 1024]. Smaller tensors collapse to 1-2 frames,
-    # larger ones spread across many. 16-aligned per HEVC requirements.
-    bytes_per_pixel_triplet = 3
-    target_n_frames = 16
-    ideal_side = max(1, int(math.isqrt(total_bytes // target_n_frames // bytes_per_pixel_triplet) or 1))
-    side = max(HEVC_MIN_DIM, min(1024, ideal_side))
-    side = ((side + HEVC_ALIGN - 1) // HEVC_ALIGN) * HEVC_ALIGN
-    bytes_per_frame = side * side * 3
-    n_frames = (total_bytes + bytes_per_frame - 1) // bytes_per_frame
-    padded_bytes = n_frames * bytes_per_frame
-
-    if padded_bytes > total_bytes:
-        padding = torch.zeros(
-            padded_bytes - total_bytes,
-            dtype=torch.uint8,
-            device=flat_u8.device,
-        )
-        padded = torch.cat([flat_u8, padding])
-    else:
-        padded = flat_u8
-
-    yuv = padded.reshape(n_frames, 3, side, side).contiguous()
-
-    backend = _get_or_create_backend(side, side, qp=0, lossless=True)
-    packets = backend.encode_tensor_frames(yuv)
-    codec_bytes = b"".join(packets)
-
-    return WireTensor(
-        name=name,
-        encoding="nvenc_lossless",
-        bytes_payload=codec_bytes,
-        dtype_str=str(orig_dtype),
-        shape=orig_shape,
-        n_codec_frames=n_frames,
-        h_padded=side,
-        w_padded=side,
-        # h_data/w_data/n_channels are reused as bookkeeping for the
-        # decoder's padding strip. Lossless mode is byte-oriented so
-        # the channel concept doesn't apply, but the wire schema
-        # already carries these fields — we set them to 0 to signal
-        # "lossless byte stream" to the decoder.
-        h_data=0,
-        w_data=0,
-        n_channels=0,
-        tile_dim=0,
-    )
-
-
-def decode_nvenc_lossless(wire: dict, payload: bytes, device: torch.device) -> torch.Tensor:
-    """Inverse of encode_nvenc_lossless. NVENC decode → flat uint8
-    byte stream → reinterpret as original dtype + shape. Bit-exact."""
-    extra = wire["extra"]
-    n_frames = int(extra["n_codec_frames"])
-    h_padded = int(extra["h_padded"])
-    w_padded = int(extra["w_padded"])
-    shape = tuple(wire["shape"])
-    dtype = _torch_dtype_from_str(wire["dtype"])
-
-    backend = _get_decode_backend(h_padded, w_padded)
-    decoded = backend.decode_frames_cuda([payload], n_frames)  # [N, 3, H, W] uint8
-
-    # Flatten to a 1D byte stream, trim padding, reinterpret as original dtype.
-    flat = decoded.to(device=device).contiguous().flatten()
-
-    numel = 1
-    for d in shape:
-        numel *= int(d)
-    itemsize = torch.empty(0, dtype=dtype).element_size()
-    total_bytes = numel * itemsize
-    flat = flat[:total_bytes].contiguous()
-
-    # Reinterpret bytes. uint8 ↔ other dtypes requires a same-byte-size
-    # hop for some dtype combos (bf16). Cross-byte-size .view(dtype)
-    # is supported and scales the last dim accordingly.
-    if dtype == torch.bfloat16:
-        result = flat.view(torch.uint16).view(torch.bfloat16)
-    elif dtype == torch.uint8:
-        result = flat
-    else:
-        result = flat.view(dtype)
-
-    return result.reshape(shape)
-
-
 def encode(name: str, tensor: torch.Tensor, mode: str, qp: int = 18, lossless: bool = False, tile_dim: int = 4) -> WireTensor:
     if mode == "raw":
         return encode_raw(name, tensor)
     elif mode == "nvenc":
         return encode_nvenc(name, tensor, qp=qp, lossless=lossless, tile_dim=tile_dim)
-    elif mode == "nvenc_lossless":
-        return encode_nvenc_lossless(name, tensor)
     else:
         raise ValueError(f"unknown codec mode {mode!r}")
 
@@ -540,7 +426,5 @@ def decode(wire: dict, payload: bytes, device: torch.device) -> torch.Tensor:
         return decode_raw(wire, payload, device)
     elif enc == "nvenc":
         return decode_nvenc(wire, payload, device)
-    elif enc == "nvenc_lossless":
-        return decode_nvenc_lossless(wire, payload, device)
     else:
         raise ValueError(f"unknown wire encoding {enc!r}")
