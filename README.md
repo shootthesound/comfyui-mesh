@@ -8,9 +8,11 @@ network OR between two cards in the same machine. The activations
 between them get compressed live by NVIDIA's NVENC idle silicon
 through a codec I designed to abstract model activation data.**
 
-> **Supported today:** FLUX.2 Dev and FLUX.2 Klein 9B. Other
-> architectures (Wan, LTX-Video, FLUX.1, SD3.5, …) are on the roadmap
-> further down — let me know which one you want next.
+> **Supported today:** FLUX.2 Dev, FLUX.2 Klein 9B, and **LTX 2.3
+> (LTX-AV 22B Dev)**. Each has its own paired node + server launcher
+> — see "Quick start" and the LTX section below. Other architectures
+> (Wan, FLUX.1, SD3.5, …) are on the roadmap further down — let me
+> know which one you want next.
 
 > **Headline:** FLUX.2 Klein 9B at 1024² generates in **~4.4 seconds
 > per image** split across an RTX 5090 + RTX 4090 over plain gigabit
@@ -75,6 +77,10 @@ That's it. The rest is plumbing.
   checkpoints Black Forest Labs ships today; both tested end-to-end.
   (FLUX.1 schnell is a separate architecture and is on the roadmap
   below, not in this list.)
+- **LTX 2.3 (LTX-AV 22B Dev).** The Lightricks LTX video model with
+  audio+video transformer blocks. Uses a separate Icarus LTX node
+  and a separate Daedalus LTX server GUI — see the LTX section below
+  for the small UX differences from the FLUX pair.
 - **LoRAs**: any format ComfyUI itself supports — Kohya, Diffusers PEFT,
   BFL Flux, USO, Wan Fun, SimpleTuner, native, etc. Includes the full
   weight-adapter family: **lora, loha, lokr, glora, oft, boft**, plus
@@ -88,14 +94,12 @@ That's it. The rest is plumbing.
     end-to-end myself; community feedback welcome. See the same-host
     quickstart below for the expected setup.*
 
-**Models that are NOT supported (yet)** — anything that isn't FLUX.2.
-The architectural differences are real (block signatures, modulation,
-vec structure), but they're not blockers — just code that needs
-writing. Top of the queue when community demand says go:
+**Models that are NOT supported (yet)** — anything that isn't FLUX.2
+or LTX 2.3. The architectural differences are real (block signatures,
+modulation, vec structure), but they're not blockers — just code that
+needs writing. Top of the queue when community demand says go:
 
 - **Wan** (2.1 / 2.2 / VACE) — video model with very similar DiT shape
-- **LTX-Video** — distilled video diffusion, would benefit hugely from
-  the split-rig (long sequences, big activations)
 - **FLUX.1** — same family as FLUX.2, minor handling differences
 - **SD3 / SD3.5** — MMDiT, related architecture
 - **HunyuanVideo / Qwen-Image / Chroma** — each has its own quirks
@@ -240,6 +244,74 @@ it.
 This applies to any large LoRA (>~500 MB), not just turbo. For
 small character / style LoRAs the normal "LoraLoader BEFORE Icarus
 + `forward_client_loras=ON`" pattern is fine and convenient.
+
+---
+
+## LTX 2.3 — separate node + separate server GUI
+
+LTX 2.3 (the Lightricks LTX-AV 22B Dev model) uses its own paired
+client node and server launcher, alongside the FLUX ones. Both halves
+of the rig live in the same install — pick which node + launcher to
+use based on which model you're running.
+
+### Client side
+
+In the ComfyUI node menu under `mesh` you'll see two nodes:
+
+- **`ComfyUI Mesh : Icarus`** — for FLUX.2 Dev / Klein 9B.
+- **`ComfyUI Mesh : Icarus LTX`** — for LTX 2.3.
+
+Drop `Icarus LTX` between the LTX model loader and the LoraLoader /
+sampler chain. A ready-to-load demo workflow ships at
+[`workflows/LTX-example.json`](workflows/LTX-example.json).
+
+The LTX node has a deliberately smaller surface than the FLUX one:
+
+| Parameter | Default | What it controls |
+|---|---|---|
+| `model` | — | The loaded LTX-AV MODEL |
+| `n_blocks_remote` | 11 | How many of LTX's 48 transformer_blocks run remotely. Increase = more offload, smaller client VRAM. |
+| `remote_host` | `127.0.0.1` | Hostname/IP of the back-half server |
+| `remote_port` | `7777` | TCP port |
+| `codec_mode` | `Nvenc LTX` | `Nvenc LTX` = LTX-tuned codec (NVENC HEVC + per-channel percentile-clip quant + sparse exact-correction of outliers; near-raw quality, ~3× smaller than raw, roughly the same wall-clock as raw on gigabit). `nvenc` = plain NVENC HEVC, lighter wire, can show contrast crush on LTX. `raw` = uncompressed bf16. |
+| `forward_client_loras` | ON | Same semantics as the FLUX node |
+
+There are no `codec_qp` / `codec_lossless` / `codec_tile_dim` widgets
+on the LTX node — those are pinned internally at the sweet spot that
+works for LTX activations.
+
+### Server side
+
+The server side ships **two** GUIs side-by-side in the same `server/`
+folder:
+
+- **`run_server_gui.bat`** — Daedalus for FLUX.2 (existing).
+- **`run_server_ltx_gui.bat`** — Daedalus LTX for LTX 2.3.
+
+Launch whichever matches the client node you're using. They have
+distinct settings files and run as independent processes — you can
+keep both installed and toggle by closing one and launching the other
+(they default to the same port 7777 so don't try to run them
+simultaneously without changing one).
+
+The LTX server GUI has the same model picker + n_blocks + port +
+device + dtype rows as the FLUX one, plus **two LoRA slots** instead
+of one:
+
+- **LoRA / LoRA strength** — primary slot (default strength 1.0).
+  Use this for your character or style LoRA.
+- **Distill LoRA / Distill strength** — secondary slot (default
+  strength **0.5**). Intended for the **LTX 2.3 Distilled LoRA**,
+  which most LTX workflows stack on top of the base model. Default
+  0.5 matches the typical strength.
+
+Both server-side LoRAs apply to the slim-loaded back-half blocks at
+server startup (or restart on a settings change). Stacking them
+server-side avoids the wire cost of forwarding them per generation.
+
+`n_blocks` on the server GUI defaults to **11** to match the LTX
+client node's default. Persisted settings still win on subsequent
+launches.
 
 ---
 
@@ -470,11 +542,16 @@ comfyui-mesh/
 ├── requirements.txt              ← ComfyUI auto-installs (cuda-bindings)
 ├── __init__.py                   ← ComfyUI node registration + WEB_DIRECTORY
 ├── mesh_node.py                  ← MeshSplitFlux + /mesh/status + /mesh/reconfigure HTTP routes
-├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC)
+├── mesh_node_ltx.py              ← MeshSplitLTX + /mesh/ltx/status + /mesh/ltx/reconfigure
+├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC, plus Nvenc LTX mode)
 ├── protocol.py                   ← length-prefixed TCP framing
 ├── vec_io.py                     ← FLUX.2 vec/modulation tuple (de)serializer
+├── payload_ltx.py                ← LTX-AV per-block payload (de)serializer (constants cache, PE 3-tuples, CompressedTimestep)
 ├── lora_io.py                    ← safetensors-based LoRA patch shipping
-├── web/mesh.js                   ← pill widgets, banner, Confirm button, connection light
+├── web/mesh.js                   ← FLUX Icarus pill widgets, banner, Confirm button, connection light
+├── web/mesh_ltx.js               ← LTX Icarus equivalents (polls /mesh/ltx/status)
+├── workflows/klein-9b-example.json  ← drop-in FLUX.2 Klein 9B demo workflow
+├── workflows/LTX-example.json    ← drop-in LTX 2.3 demo workflow
 ├── smoke_test_codec.py           ← standalone codec roundtrip test
 ├── nvenc_pframe/                 ← BUNDLED NVENC codec wrapper (no separate install)
 └── server/                       ← deploy folder for the back-half host
@@ -482,12 +559,14 @@ comfyui-mesh/
     ├── CLAUDE.md
     ├── install.bat               ← one-shot installer
     ├── requirements.txt
-    ├── mesh_server.py            ← slim-load TCP server
-    ├── mesh_server_gui.py        ← Tkinter wrapper
-    ├── codec.py / protocol.py / vec_io.py / lora_io.py / nvenc_pframe/  ← mirror of client (byte-identical)
+    ├── mesh_server.py            ← FLUX slim-load TCP server
+    ├── mesh_server_gui.py        ← FLUX Tkinter wrapper
+    ├── mesh_server_ltx.py        ← LTX slim-load TCP server (LTX-AV variant detection, dual LoRA slots)
+    ├── mesh_server_ltx_gui.py    ← LTX Tkinter wrapper (extra Distill LoRA row)
+    ├── codec.py / protocol.py / vec_io.py / lora_io.py / payload_ltx.py / nvenc_pframe/  ← wire-contract mirrors (byte-identical to client)
     ├── smoke_test_server.py
     ├── install_check.py
-    └── run_server*.bat           ← six launcher variants (default/gpu0/gpu1/cpu/gui + install)
+    └── run_server*.bat           ← launchers: run_server.bat / _gpu0 / _gpu1 / _cpu / _gui / _ltx_gui / install
 ```
 
 ---

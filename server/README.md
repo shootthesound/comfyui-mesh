@@ -5,9 +5,19 @@ Companion to **Icarus**, the ComfyUI custom node living one folder up
 the back-half GPU — a second machine on the LAN/Tailscale, or a
 second card in the same desktop. It runs a long-lived TCP server:
 per request, it takes activations from the front half of FLUX's
-transformer block stack, runs the remaining doubles + singles
-through its slim-loaded weights, and ships the result back over the
-wire (NVENC-compressed).
+(or LTX's) transformer block stack, runs the remaining blocks through
+its slim-loaded weights, and ships the result back over the wire
+(NVENC-compressed).
+
+**Two servers in one folder:**
+
+- `mesh_server.py` + `mesh_server_gui.py` — for **FLUX.2** Dev / Klein 9B.
+- `mesh_server_ltx.py` + `mesh_server_ltx_gui.py` — for **LTX 2.3** (LTX-AV 22B Dev).
+
+Both share the same install, the same codec, the same wire protocol
+plumbing — just paired with the matching client node (`Icarus` for
+FLUX, `Icarus LTX` for LTX). See the LTX subsection below for the
+small UX differences between the two GUIs.
 
 (Daedalus prepares the wings; Icarus rides them. The names are
 mythological flair on the underlying engineering split — the server
@@ -38,33 +48,52 @@ server/
 ├── install.bat                 ← ONE-SHOT INSTALLER — venv + ComfyUI + cu128 torch + deps
 ├── update_comfy.bat            ← git pull on .\ComfyUI + re-install requirements
 ├── requirements.txt            ← what install.bat installs (also for manual use)
-├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
+│
+│ ─── FLUX.2 server pair ───
+├── mesh_server.py              ← FLUX server. Slim-loads via safetensors.safe_open.
 │                                  Handles reconfigure messages by writing a handoff
 │                                  file and exiting; GUI relaunches with new --n-blocks.
-├── mesh_server_gui.py          ← Tkinter wrapper. Settings persist to JSON; restart
+├── mesh_server_gui.py          ← FLUX Tkinter wrapper. Settings persist to JSON; restart
 │                                  button on form drift; auto-restart on reconfigure;
 │                                  startup trace log captures bat→python wall-clock.
-├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC + tile_dim)
+│
+│ ─── LTX 2.3 server pair ───
+├── mesh_server_ltx.py          ← LTX server. Same slim-load pattern, plus LTX-AV
+│                                  variant detection and TWO LoRA slots (--lora +
+│                                  --lora2; the second slot defaults to strength 0.5
+│                                  for the LTX 2.3 Distilled LoRA).
+├── mesh_server_ltx_gui.py      ← LTX Tkinter wrapper. Same shape as the FLUX GUI plus
+│                                  a second "Distill LoRA" row (default strength 0.5).
+│                                  Settings persist independently of the FLUX GUI's.
+│
+│ ─── wire-contract files (mirror client; MUST stay byte-identical) ───
+├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC, plus Nvenc LTX mode)
 ├── protocol.py                 ← length-prefixed TCP framing
 ├── vec_io.py                   ← FLUX.2 vec/modulation tuple (de)serializer
+├── payload_ltx.py              ← LTX-AV per-block payload (de)serializer
 ├── lora_io.py                  ← safetensors-based LoRA patch shipping
 ├── nvenc_pframe/               ← BUNDLED codec source (no separate install)
 │   └── direct/...              ←   compiles its C helper on first import
+│
+│ ─── helpers + launchers ───
 ├── smoke_test_server.py        ← validates model load + back-half forward
 ├── install_check.py            ← env pre-flight (deps + cuda + comfy + weights)
 ├── _splash.cmd                 ← cmd-console "starting…" splash launched by the
 │                                  GUI bat in parallel with pythonw, polls a sentinel
 │                                  file and self-closes when the GUI window paints
-├── run_server_gui.bat          ← launch the GUI (recommended for first run)
-├── run_server.bat              ← headless launcher, no GPU pinning
-├── run_server_gpu0.bat         ← same-host: pin server to physical GPU 0
-├── run_server_gpu1.bat         ← same-host: pin server to physical GPU 1
-└── run_server_cpu.bat          ← CPU / system-RAM mode (slow; raw codec only)
+├── _splash_ltx.cmd             ← same, for the LTX GUI's launcher
+├── run_server_gui.bat          ← launch the FLUX GUI (recommended for first FLUX run)
+├── run_server_ltx_gui.bat      ← launch the LTX GUI (recommended for first LTX run)
+├── run_server.bat              ← headless FLUX launcher, no GPU pinning
+├── run_server_gpu0.bat         ← same-host: pin FLUX server to physical GPU 0
+├── run_server_gpu1.bat         ← same-host: pin FLUX server to physical GPU 1
+└── run_server_cpu.bat          ← FLUX CPU / system-RAM mode (slow; raw codec only)
 ```
 
-Files in `codec.py / protocol.py / vec_io.py / lora_io.py / nvenc_pframe/`
-MUST stay byte-identical to the client-side copies. They're the wire
-contract — drift = silent corruption.
+Files in `codec.py / protocol.py / vec_io.py / payload_ltx.py /
+lora_io.py / nvenc_pframe/` MUST stay byte-identical to the
+client-side copies. They're the wire contract — drift = silent
+corruption.
 
 ---
 
@@ -308,6 +337,61 @@ python mesh_server.py \
 
 Omit `--n-blocks` to load every double-block (still skips single-blocks
 and final layer, which the server never uses).
+
+---
+
+## Running the LTX 2.3 server
+
+For LTX 2.3 (the Lightricks LTX-AV 22B Dev model) the install is the
+same as the FLUX install — `install.bat` covers both. The launcher
+and the script that runs are different:
+
+```
+run_server_ltx_gui.bat
+```
+
+The LTX GUI is the same shape as the FLUX one (model picker,
+n_blocks spinbox, port/bind/device/dtype rows, start/stop, log
+view) with two LTX-specific extras:
+
+- **n_blocks defaults to 11** — matches the Icarus LTX node's
+  default. LTX-AV 22B has 48 transformer_blocks total.
+- **Two LoRA rows** instead of one:
+  - **LoRA / LoRA strength** — primary slot, default strength 1.0.
+  - **Distill LoRA / Distill strength** — second slot, default
+    strength **0.5**. Intended for the **LTX 2.3 Distilled LoRA**
+    which most LTX workflows stack on top of the base model.
+    Default 0.5 matches the typical strength.
+
+Both slots get applied to the slim-loaded model at server startup,
+in order (primary first, then distill). They also both get re-applied
+after any client-LoRA unpatch so a client that's forwarding its own
+LoRAs doesn't accidentally drop the server's static slot LoRAs.
+
+GUI settings (model path, n_blocks, port, bind, device, dtype, both
+LoRA paths + strengths) persist independently of the FLUX GUI's in
+`mesh_server_ltx_gui_settings.json` next to the script.
+
+The LTX server also accepts direct CLI invocation with the same flags
+as the FLUX one, plus `--lora2` / `--lora2-strength`:
+
+```
+python mesh_server_ltx.py \
+    --weights ltx-2.3-22b-dev-fp8.safetensors \
+    --n-blocks 11 \
+    --port 7777 \
+    --bind 0.0.0.0 \
+    --device cuda:0 \
+    --dtype bfloat16 \
+    --lora character.safetensors --lora-strength 1.0 \
+    --lora2 ltx-2.3-22b-distilled-lora-384.safetensors --lora2-strength 0.5
+```
+
+The LTX server reuses the same `--n-blocks` reconfigure handshake +
+handoff-file pattern as the FLUX server, so the Icarus LTX node's
+Confirm-restart flow works the same way. The two servers default to
+the same port (7777) — don't try to run both simultaneously without
+changing one's `--port`.
 
 ---
 
