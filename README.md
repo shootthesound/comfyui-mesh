@@ -379,8 +379,9 @@ What more support unlocks:
 - **Activation pre-stage cache** — skip re-shipping unchanged `pe` /
   `vec_orig` etc within a generation
 
-What it helps unlock for me:
-I'm a parent working from home mostly now with an longterm ill child whom I'm supporting and my wife is looking after with me. As much as doing this dev work is a passion and quite frankly needed distraction, the donations help keep the ligths on at the moment.  
+**Why it matters to me**
+
+I'm a parent working from home, supporting a long-term ill child alongside my wife. As much as this dev work is a passion, it's also a needed distraction — and donations genuinely help keep the lights on right now.
 
 ---
 
