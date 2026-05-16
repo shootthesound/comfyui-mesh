@@ -313,8 +313,7 @@ def find_comfyui_path() -> str | None:
     """Mirror mesh_server.py's COMFYUI_PATH discovery."""
     candidates = [
         os.environ.get("COMFYUI_PATH"),
-        str(HERE / "ComfyUI"),
-        str(HERE.parent / "ComfyUI"),
+        str(HERE / "ComfyUI"),     # what install.bat clones
         "C:/ComfyUI",
         "/opt/ComfyUI",
     ]

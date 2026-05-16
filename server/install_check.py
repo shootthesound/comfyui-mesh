@@ -58,8 +58,7 @@ def main():
     here = Path(__file__).parent
     candidates = [
         os.environ.get("COMFYUI_PATH"),
-        str(here / "ComfyUI"),
-        str(here.parent / "ComfyUI"),
+        str(here / "ComfyUI"),     # what install.bat clones
         "C:/ComfyUI",
         "/opt/ComfyUI",
     ]
@@ -77,7 +76,7 @@ def main():
         print(f"  comfy.ldm.flux    {sym} {info}")
     else:
         print(f"  ComfyUI source    MISSING checked: {[c for c in candidates if c]}")
-        print(f"                    git clone https://github.com/comfyanonymous/ComfyUI ../ComfyUI")
+        print(f"                    git clone https://github.com/comfyanonymous/ComfyUI ./ComfyUI")
         print(f"                    set COMFYUI_PATH=/path/to/ComfyUI")
 
     # 5. nvenc-pframe — bundled in this folder; needs cuda-bindings on PATH

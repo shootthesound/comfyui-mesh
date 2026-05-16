@@ -28,8 +28,8 @@ set LORA_STRENGTH=1.0
 
 REM ---- 1. Where to find ComfyUI's Python sources ----
 if "%COMFYUI_PATH%"=="" (
-    REM Default: assume ComfyUI is checked out next to this folder.
-    set COMFYUI_PATH=%~dp0..\ComfyUI
+    REM Default: ComfyUI lives inside this server folder (install.bat clones it here).
+    set COMFYUI_PATH=%~dp0ComfyUI
 )
 echo [run_server] COMFYUI_PATH=%COMFYUI_PATH%
 

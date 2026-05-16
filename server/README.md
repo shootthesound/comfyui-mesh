@@ -36,7 +36,7 @@ server/
 ├── README.md                   ← this file
 ├── CLAUDE.md                   ← brief for an AI agent doing this side's setup
 ├── install.bat                 ← ONE-SHOT INSTALLER — venv + ComfyUI + cu128 torch + deps
-├── update_comfy.bat            ← git pull on ..\ComfyUI + re-install requirements
+├── update_comfy.bat            ← git pull on .\ComfyUI + re-install requirements
 ├── requirements.txt            ← what install.bat installs (also for manual use)
 ├── mesh_server.py              ← the server. Slim-loads via safetensors.safe_open.
 │                                  Handles reconfigure messages by writing a handoff
@@ -81,7 +81,9 @@ That single command:
 1. Finds Python (3.10+) on PATH
 2. Creates a local `.venv` in this folder
 3. Upgrades pip + wheel
-4. Clones ComfyUI to `..\ComfyUI` if it's not already there
+4. Clones ComfyUI INTO this server folder (`.\ComfyUI`) if it's not
+   already there — keeps the whole deploy in one place so you can
+   delete the folder to fully uninstall
 5. **Installs CUDA-enabled torch from PyTorch's cu128 wheels.** Covers
    every RTX 30/40/50-series card. (50-series Blackwell *requires* cu128;
    older CUDA wheels silently fall back to CPU on those cards. cu128
@@ -106,7 +108,7 @@ so the GPU-enabled wheel wins.
 update_comfy.bat
 ```
 
-Pulls the latest ComfyUI (`git pull` in `..\ComfyUI`) and re-installs
+Pulls the latest ComfyUI (`git pull` in `.\ComfyUI`) and re-installs
 its requirements + the server's extras. Run this whenever the client
 side flags a ComfyUI-version mismatch (the fp8 detection + FLUX
 implementation evolve in upstream; mismatched ComfyUI versions between

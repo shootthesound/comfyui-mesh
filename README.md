@@ -143,7 +143,7 @@ Then on the back-half host, in a terminal in the `server/` folder:
    ```
    install.bat
    ```
-   Creates a `.venv`, clones ComfyUI as a sibling folder if missing,
+   Creates a `.venv`, clones ComfyUI INTO this server folder if missing,
    installs CUDA-enabled torch (cu128 — covers RTX 30/40/50 series),
    installs dependencies, runs a pre-flight check. Multi-GB,
    takes a minute or two on a fast connection. Re-runs are idempotent.

@@ -45,7 +45,7 @@ echo [run_server] CUDA hidden -- running on CPU / system RAM
 
 REM ---- 1. Where to find ComfyUI's Python sources ----
 if "%COMFYUI_PATH%"=="" (
-    set COMFYUI_PATH=%~dp0..\ComfyUI
+    set COMFYUI_PATH=%~dp0ComfyUI
 )
 echo [run_server] COMFYUI_PATH=%COMFYUI_PATH%
 

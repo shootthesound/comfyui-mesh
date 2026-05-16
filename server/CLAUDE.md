@@ -55,11 +55,11 @@ cd /d <this folder>
 install.bat
 ```
 
-That one command: creates `.venv`, clones ComfyUI to `..\ComfyUI` if missing, installs ComfyUI's requirements (torch with CUDA), installs the server's extras (`cuda-bindings`), and runs `install_check.py` at the end. Re-run safely; every step is idempotent.
+That one command: creates `.venv`, clones ComfyUI to `.\ComfyUI` if missing, installs ComfyUI's requirements (torch with CUDA), installs the server's extras (`cuda-bindings`), and runs `install_check.py` at the end. Re-run safely; every step is idempotent.
 
 After `install.bat` reports "Install complete" and `install_check.py` shows everything OK, move on to step 2.
 
-**If you need a different CUDA-version torch wheel** (e.g. cu128 specifically), abort `install.bat` and do the manual path: create the venv, `pip install torch --index-url https://download.pytorch.org/whl/cu128`, then `pip install -r ..\ComfyUI\requirements.txt && pip install -r requirements.txt`.
+**If you need a different CUDA-version torch wheel** (e.g. cu128 specifically), abort `install.bat` and do the manual path: create the venv, `pip install torch --index-url https://download.pytorch.org/whl/cu128`, then `pip install -r .\ComfyUI\requirements.txt && pip install -r requirements.txt`.
 
 **Critical regardless of path:** the ComfyUI version here should match (or be reasonably close to) the version on the client. The fp8 detection and FLUX implementation evolve; mismatched versions = silent-correctness bugs.
 

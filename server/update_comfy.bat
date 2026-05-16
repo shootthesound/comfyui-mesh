@@ -4,7 +4,7 @@ REM  comfyui-mesh server -- update the bundled ComfyUI clone
 REM ============================================================
 REM
 REM  What this does:
-REM    1. git pull on ..\ComfyUI (the clone install.bat created)
+REM    1. git pull on .\ComfyUI (the clone install.bat created)
 REM    2. Re-installs ComfyUI's requirements (picks up any new deps)
 REM    3. Re-installs the server's own extras (cheap, idempotent)
 REM
@@ -23,7 +23,7 @@ REM ============================================================
 
 setlocal
 
-set "COMFY_DIR=%~dp0..\ComfyUI"
+set "COMFY_DIR=%~dp0ComfyUI"
 set "VENV_PY=%~dp0.venv\Scripts\python.exe"
 
 if not exist "%COMFY_DIR%\.git" (

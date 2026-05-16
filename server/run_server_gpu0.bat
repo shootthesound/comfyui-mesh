@@ -26,7 +26,7 @@ echo [run_server] pinned to physical GPU 0 (CUDA_VISIBLE_DEVICES=0)
 
 REM ---- 1. Where to find ComfyUI's Python sources ----
 if "%COMFYUI_PATH%"=="" (
-    set COMFYUI_PATH=%~dp0..\ComfyUI
+    set COMFYUI_PATH=%~dp0ComfyUI
 )
 echo [run_server] COMFYUI_PATH=%COMFYUI_PATH%
 

@@ -53,8 +53,7 @@ HERE = Path(__file__).parent
 import os
 _comfy_candidates = [
     os.environ.get("COMFYUI_PATH"),
-    str(HERE / "ComfyUI"),
-    str(HERE.parent / "ComfyUI"),
+    str(HERE / "ComfyUI"),     # what install.bat clones
     "C:/ComfyUI",
     "/opt/ComfyUI",
 ]

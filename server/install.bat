@@ -7,7 +7,7 @@ REM  What this does:
 REM    1. Finds Python on your system (py launcher preferred, python fallback)
 REM    2. Creates a local .venv in this folder if one doesn't exist
 REM    3. Upgrades pip + wheel inside the venv
-REM    4. Clones ComfyUI as ..\ComfyUI if not already there
+REM    4. Clones ComfyUI INSIDE this server folder if not already there
 REM    5. Installs CUDA-enabled torch from PyTorch's cu128 wheels.
 REM       Covers RTX 30/40/50 series. (50-series Blackwell REQUIRES cu128;
 REM       older CUDA wheels silently fall back to CPU on those cards.
@@ -76,7 +76,7 @@ if errorlevel 1 (
 )
 
 REM ---- 4. Clone ComfyUI if missing ----
-set "COMFY_DIR=%~dp0..\ComfyUI"
+set "COMFY_DIR=%~dp0ComfyUI"
 if exist "%COMFY_DIR%\comfy" (
     echo [3/6] ComfyUI source already at %COMFY_DIR%
     set "SKIP_COMFY_DEPS=1"
@@ -89,7 +89,7 @@ if exist "%COMFY_DIR%\comfy" (
         echo                git clone https://github.com/comfyanonymous/ComfyUI "%COMFY_DIR%"
         exit /b 1
     )
-    pushd "%~dp0.."
+    pushd "%~dp0"
     git clone https://github.com/comfyanonymous/ComfyUI ComfyUI
     if errorlevel 1 (
         popd

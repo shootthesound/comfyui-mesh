@@ -27,9 +27,7 @@ if str(HERE) not in sys.path:
 import os
 _comfy_candidates = [
     os.environ.get("COMFYUI_PATH"),
-    "S:/Auto/ComfyUI_SEC/ComfyUI",  # the 5090 install (for loopback testing)
-    str(HERE / "ComfyUI"),
-    str(HERE.parent / "ComfyUI"),
+    str(HERE / "ComfyUI"),     # what install.bat clones
     "C:/ComfyUI",
     "/opt/ComfyUI",
 ]

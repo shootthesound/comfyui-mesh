@@ -5,6 +5,9 @@ __pycache__/
 .idea/
 .vscode/
 
+# install.bat clones ComfyUI inside the server folder; don't track it
+server/ComfyUI/
+
 # never commit model weights
 *.safetensors
 *.ckpt

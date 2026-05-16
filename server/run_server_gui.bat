@@ -9,7 +9,7 @@ setlocal
 
 REM ---- Where to find ComfyUI's Python sources ----
 if "%COMFYUI_PATH%"=="" (
-    set COMFYUI_PATH=%~dp0..\ComfyUI
+    set COMFYUI_PATH=%~dp0ComfyUI
 )
 echo [run_server_gui] COMFYUI_PATH=%COMFYUI_PATH%
 
