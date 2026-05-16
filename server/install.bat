@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  comfyui-mesh server — one-shot installer
+REM  comfyui-mesh server -- one-shot installer
 REM ============================================================
 REM
 REM  What this does:
@@ -16,7 +16,7 @@ REM    6. Installs ComfyUI's other requirements (transformers, einops, etc.)
 REM    7. Installs the back-half server's extras (cuda-bindings)
 REM    8. Runs install_check.py to confirm everything is wired up
 REM
-REM  Re-run safely — every step is idempotent. Skips work already done.
+REM  Re-run safely -- every step is idempotent. Skips work already done.
 REM
 REM  To pull a newer ComfyUI later:  update_comfy.bat
 REM
@@ -106,7 +106,7 @@ REM ----    pull the CPU-only wheel from PyPI on Windows (which
 REM ----    silently breaks NVENC + CUDA inference). cu128 supports
 REM ----    every 30/40/50-series card. 50-series Blackwell REQUIRES
 REM ----    cu128 specifically (older CUDA wheels fall back to CPU).
-echo [4/7] installing CUDA-enabled torch ^(cu128 — covers 30/40/50 series^) ...
+echo [4/7] installing CUDA-enabled torch ^(cu128 -- covers 30/40/50 series^) ...
 "%VENV_PY%" -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 if errorlevel 1 (
     echo [install] ERROR: CUDA torch install failed.
@@ -151,7 +151,7 @@ echo    1. Drop your FLUX safetensors checkpoint into this folder
 echo       ^(e.g. flux-2-klein-9b-fp8.safetensors^)
 echo.
 echo    2. Launch the server:
-echo         run_server_gui.bat   ^(Tkinter UI — recommended for first run^)
+echo         run_server_gui.bat   ^(Tkinter UI -- recommended for first run^)
 echo         run_server.bat       ^(headless; edit N_BLOCKS at the top first^)
 echo.
 echo  The server listens on 0.0.0.0:7777 by default. Tell the

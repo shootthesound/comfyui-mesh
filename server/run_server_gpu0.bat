@@ -14,7 +14,7 @@ REM ============================================================
 set N_BLOCKS=4
 
 REM ============================================================
-REM  Optional LoRA — leave LORA empty to skip.
+REM  Optional LoRA -- leave LORA empty to skip.
 REM ============================================================
 set LORA=
 set LORA_STRENGTH=1.0

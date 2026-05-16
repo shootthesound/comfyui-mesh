@@ -7,7 +7,7 @@ REM
 REM How it works: CUDA_VISIBLE_DEVICES=1 hides GPU 0 from this process.
 REM The server still addresses its (only-visible) card as cuda:0, which
 REM is now the physical second GPU. ComfyUI can run unchanged on its
-REM cuda:0 in another terminal — they don't fight over the same card.
+REM cuda:0 in another terminal -- they don't fight over the same card.
 
 setlocal
 
@@ -19,7 +19,7 @@ REM ============================================================
 set N_BLOCKS=4
 
 REM ============================================================
-REM  Optional LoRA — leave LORA empty to skip.
+REM  Optional LoRA -- leave LORA empty to skip.
 REM ============================================================
 set LORA=
 set LORA_STRENGTH=1.0

@@ -1,7 +1,7 @@
 @echo off
 REM Launcher: comfyui-mesh server with the Tkinter GUI.
 REM
-REM No N_BLOCKS env var here — the GUI's spinbox handles that. Same goes
+REM No N_BLOCKS env var here -- the GUI's spinbox handles that. Same goes
 REM for device pinning: the GUI's dropdown sets CUDA_VISIBLE_DEVICES on
 REM the subprocess. This bat just opens the GUI.
 

@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  comfyui-mesh server — update the bundled ComfyUI clone
+REM  comfyui-mesh server -- update the bundled ComfyUI clone
 REM ============================================================
 REM
 REM  What this does:
@@ -8,7 +8,7 @@ REM    1. git pull on ..\ComfyUI (the clone install.bat created)
 REM    2. Re-installs ComfyUI's requirements (picks up any new deps)
 REM    3. Re-installs the server's own extras (cheap, idempotent)
 REM
-REM  CUDA torch is NOT touched here — install.bat installed cu128
+REM  CUDA torch is NOT touched here -- install.bat installed cu128
 REM  wheels and they don't change unless you intentionally upgrade
 REM  the card or a new ComfyUI version requires a newer torch.
 REM  Re-run install.bat for that.

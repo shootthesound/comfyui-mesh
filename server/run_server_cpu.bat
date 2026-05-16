@@ -2,13 +2,13 @@
 REM Launcher: comfyui-mesh back-half server on CPU (system RAM only).
 REM
 REM This is the "use my system RAM as extra working memory" mode. With
-REM CUDA hidden from this process, PyTorch falls back to CPU — the
+REM CUDA hidden from this process, PyTorch falls back to CPU -- the
 REM model loads into system RAM and the back-half forward pass runs
 REM on CPU cores.
 REM
 REM Why this is interesting: it proves the architectural decoupling.
 REM With codec_mode=raw on the client side, the server's hardware can
-REM be ANY PyTorch backend — Nvidia GPU, AMD GPU, Apple Silicon, or
+REM be ANY PyTorch backend -- Nvidia GPU, AMD GPU, Apple Silicon, or
 REM just DDR + CPU cores. The wire doesn't know.
 REM
 REM Honest expectations:
@@ -18,11 +18,11 @@ REM     generation just for the back-half work. Not a production
 REM     speed; it's an architectural-proof setup.
 REM   - 64+ GB system RAM recommended (model is ~18 GB bf16 working
 REM     set + scratch).
-REM   - fp8 weights might not load on CPU — ComfyUI's fp8 ops are
+REM   - fp8 weights might not load on CPU -- ComfyUI's fp8 ops are
 REM     CUDA-tuned. If you hit a kernel-not-found error, you need a
 REM     bf16 variant of the checkpoint; point WEIGHTS at it.
 REM   - codec_mode on the client side MUST be 'raw'. NVENC is GPU
-REM     silicon — there's nothing to drive it on CPU.
+REM     silicon -- there's nothing to drive it on CPU.
 
 setlocal
 
@@ -34,14 +34,14 @@ REM ============================================================
 set N_BLOCKS=4
 
 REM ============================================================
-REM  Optional LoRA — leave LORA empty to skip.
+REM  Optional LoRA -- leave LORA empty to skip.
 REM ============================================================
 set LORA=
 set LORA_STRENGTH=1.0
 
 REM Hide all CUDA devices so the server can't accidentally pick a GPU.
 set CUDA_VISIBLE_DEVICES=
-echo [run_server] CUDA hidden — running on CPU / system RAM
+echo [run_server] CUDA hidden -- running on CPU / system RAM
 
 REM ---- 1. Where to find ComfyUI's Python sources ----
 if "%COMFYUI_PATH%"=="" (
