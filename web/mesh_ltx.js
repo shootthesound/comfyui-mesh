@@ -399,7 +399,7 @@ function startConnectionPoll(node) {
         const portW = node.widgets.find((w) => w.name === "remote_port");
         if (!hostW || !portW) return;
         try {
-            const url = `/mesh/status?host=${encodeURIComponent(String(hostW.value))}` +
+            const url = `/mesh/ltx/status?host=${encodeURIComponent(String(hostW.value))}` +
                         `&port=${encodeURIComponent(String(portW.value))}`;
             const resp = await fetch(url);
             if (resp.ok) {
