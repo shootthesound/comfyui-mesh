@@ -980,12 +980,17 @@ class MeshSplitLTX:
                                            )}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535,
                                         "tooltip": "TCP port the back-half server is listening on. Default 7777."}),
-                "codec_mode": (["raw", "nvenc"], {"default": "nvenc",
+                "codec_mode": (["raw", "nvenc", "nvenc_lossless"], {"default": "nvenc",
                                                   "tooltip": (
                                                       "How activations get put on the wire. "
                                                       "'nvenc' = NVENC HEVC compresses 3-10× before sending — "
                                                       "the right choice for any slow wire (LAN, Tailscale, "
                                                       "residential broadband). "
+                                                      "'nvenc_lossless' = bit-exact NVENC: skips the per-channel "
+                                                      "uint8 quant (which is the actual quality-loss culprit, "
+                                                      "not NVENC's QP). Output is mathematically identical to "
+                                                      "'raw'; compression is modest (1.2–2×). Use this on LTX "
+                                                      "if you see contrast crush or color shift vs single-GPU. "
                                                       "'raw' = uncompressed bf16 — only better when the wire "
                                                       "is faster than the codec encode/decode latency, i.e. "
                                                       "PCIe between two GPUs in the same machine."
