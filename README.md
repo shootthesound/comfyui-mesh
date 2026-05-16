@@ -14,7 +14,7 @@ network OR between two cards in the same machine. The activations
 between them get compressed live by NVIDIA's idle video codec
 silicon.**
 
-> **Models supported today:** FLUX.2 Klein 9B and FLUX.2 dev. Other
+> **Supported today:** FLUX.2 Dev and FLUX.2 Klein 9B. Other
 > architectures (Wan, LTX-Video, FLUX.1, SD3.5, …) are on the roadmap
 > further down — let me know which one you want next.
 
@@ -72,7 +72,7 @@ That's it. The rest is plumbing.
 
 ## What works today
 
-- **FLUX.2 Klein 9B and FLUX.2 dev.** These are the two FLUX.2
+- **FLUX.2 Dev and FLUX.2 Klein 9B.** These are the two FLUX.2
   checkpoints Black Forest Labs ships today; both tested end-to-end.
   (FLUX.1 schnell is a separate architecture and is on the roadmap
   below, not in this list.)
@@ -162,7 +162,13 @@ Then on the back-half host, in a terminal in the `server/` folder:
 
 2. Drop your FLUX.2 safetensors checkpoint into the same `server/`
    folder (e.g. `flux-2-klein-9b-fp8.safetensors` or
-   `flux2_dev_fp8mixed.safetensors`).
+   `flux2_dev_fp8mixed.safetensors`). Where to get the right files:
+   - **FLUX.2 Dev:** the ComfyUI docs page
+     [Flux.2 Dev](https://docs.comfy.org/tutorials/flux/flux-2-dev)
+     has direct links (the fp8 variants are what fit comfortably on
+     consumer cards).
+   - **FLUX.2 Klein 9B:** Black Forest Labs' HuggingFace repo at
+     [black-forest-labs/FLUX.2-klein-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/tree/main).
 
 3. Launch via the GUI (recommended for first run):
    ```
@@ -261,7 +267,7 @@ Its parameters:
 | Parameter | Default | What it controls |
 |---|---|---|
 | `model` | — | The loaded FLUX MODEL |
-| `n_blocks_remote` | 4 | How many transformer blocks run remotely (counts double-blocks first, then single-blocks). For Klein 9B: max 32. For FLUX.2 dev: max 56. Change handling is inline — see "Live UX" below. |
+| `n_blocks_remote` | 4 | How many transformer blocks run remotely (counts double-blocks first, then single-blocks). For FLUX.2 Klein 9B: max 32. For FLUX.2 Dev: max 56. Change handling is inline — see "Live UX" below. |
 | `remote_host` | `127.0.0.1` | Hostname or IP of the back-half server. 127.0.0.1 = same machine. 192.168.x.x = LAN. 100.x.x.x = VPN. |
 | `remote_port` | `7777` | TCP port the back-half server is listening on |
 | `codec_mode` | `nvenc` | `nvenc` for slow wires (LAN, VPN, residential broadband). `raw` for same-host PCIe (faster than codec encode/decode latency). |

@@ -18,7 +18,7 @@ Two headline architectural properties:
 
 1. **Slim-load.** Server reads ONLY the blocks it needs from disk. For
    FLUX.2 Klein 9B at `n_blocks=4`: ~2.2 GB instead of 9.4 GB. For
-   FLUX.2 dev at `n_blocks=12`: ~6 GB instead of ~22 GB. For models
+   FLUX.2 Dev at `n_blocks=12`: ~6 GB instead of ~22 GB. For models
    too big to fit on either device whole, this is the load-bearing
    property.
 2. **LoRA support, both ways.** Pick a LoRA at startup (GUI or CLI) +
@@ -143,6 +143,15 @@ between the two ends is the most likely silent-correctness bug.
 flux-2-klein-9b-fp8.safetensors   ← 9.4 GB and/or flux2_dev_fp8mixed.safetensors
 ```
 
+Where to get the right files:
+
+- **FLUX.2 Dev:** the ComfyUI docs page
+  [Flux.2 Dev](https://docs.comfy.org/tutorials/flux/flux-2-dev) has
+  direct links (the fp8 variants are what fit comfortably on consumer
+  cards).
+- **FLUX.2 Klein 9B:** Black Forest Labs' HuggingFace repo at
+  [black-forest-labs/FLUX.2-klein-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/tree/main).
+
 Or point the launcher at wherever you keep your checkpoints.
 
 ### Smoke-test the model load + forward
@@ -192,7 +201,7 @@ Opens a Tkinter window with:
 
 - **Model:** file picker. Picks the safetensors.
 - **n_blocks:** spinbox. Auto-bounds its max to (n_double + n_single)
-  for the loaded checkpoint. FLUX.2 Klein 9B → 32 max. FLUX.2 dev → 56
+  for the loaded checkpoint. FLUX.2 Klein 9B → 32 max. FLUX.2 Dev → 56
   max. `0` = full model.
 - **Port / Bind:** defaults 7777 / 0.0.0.0.
 - **Device:** dropdown listing nvidia-smi-detected GPUs + "cpu". Sets
