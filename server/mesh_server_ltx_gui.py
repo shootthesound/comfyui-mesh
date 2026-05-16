@@ -487,7 +487,7 @@ class MeshServerGUI:
             row, from_=-2.0, to=2.0, increment=0.1,
             textvariable=self.lora2_strength_var, width=8,
         ).pack(side=LEFT)
-        _Label(row, text="(LTX 2.3 distilled LoRA — 0.5 is the typical strength)",
+        _Label(row, text="(only needed if running the base LTX model — skip if your weights are already a distilled variant; 0.5 typical)",
               fg=THEME["fg_dim"], anchor="w").pack(side=LEFT, padx=8)
 
         # Row: start/stop + status
