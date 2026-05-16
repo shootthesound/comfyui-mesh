@@ -31,7 +31,7 @@ card elsewhere on the LAN.
 **Any modern Nvidia GPU with NVENC works** — 3080 + 4080, 4070 + 5070,
 5090 + 4090, whatever you have. The two cards don't have to be the
 same model or generation. Or two cards in the same box without NVLink.
-Or your friend's GPU over Tailscale. The bandwidth that would normally
+Or your friend's GPU over VPN. The bandwidth that would normally
 make this miserable stops being the bottleneck because NVENC compresses
 the bytes on the wire while they're already on the GPU.
 
@@ -81,7 +81,7 @@ That's it. The rest is plumbing.
   `diff` / `set` style patches.
 - **Topologies**:
   - Cross-machine over LAN (gigabit OK, 2.5G/10G better)
-  - Cross-machine over Tailscale (residential broadband fine for
+  - Cross-machine over VPN (residential broadband fine for
     FLUX.2-distilled's 4-step samplers)
   - Same machine with two GPUs (no NVLink required) — *the rig is
     set up to handle this cleanly but I haven't been able to test it
@@ -110,7 +110,7 @@ the priority list.
 
 Two physical machines: one running ComfyUI (**Icarus** lives here),
 one running the back-half server (**Daedalus** lives here). Connected
-over your LAN or Tailscale.
+over your LAN or VPN.
 
 ### 1. Install Icarus (the ComfyUI node) on the ComfyUI host
 
@@ -201,7 +201,7 @@ Set on the `Icarus` node:
 
 - **`n_blocks_remote`** = same number as the server's GUI (default 4)
 - **`remote_host`** = the server's LAN IP, e.g. `192.168.0.18`, or
-  Tailscale IP `100.x.x.x`
+  VPN IP `100.x.x.x`
 - **`remote_port`** = `7777`
 - **`codec_mode`** = `nvenc`, **`codec_qp`** = `18`, **`codec_tile_dim`** = `8`
 - **`forward_client_loras`** = **ON** (so any LoraLoader-loaded LoRA
@@ -247,7 +247,7 @@ GPU.
 the same desktop is ~32 GB/s — much faster than what the codec
 encode/decode takes — you'll get better wall-clock with
 `codec_mode = raw` instead of `nvenc`. The codec is the right tool for
-slow wires (LAN, Tailscale, residential broadband); on PCIe it's
+slow wires (LAN, VPN, residential broadband); on PCIe it's
 overkill and adds latency. Set `codec_mode = raw` for same-host pairs.
 
 ---
