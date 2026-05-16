@@ -1,13 +1,7 @@
-# comfyui-mesh
+# ComfyUI-Mesh Icarus & Daedalus
 
 **ComfyUI Mesh : Icarus** *(the ComfyUI client node)* ↔
 **ComfyUI Mesh : Daedalus** *(the back-half server)*
-
-<a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
-
-If this project saves you buying a new GPU, please consider donating — it helps me support more models beyond FLUX and keep this thing maintained.
-
-![Demo workflow with Icarus inline](screenshots/workflow-screenshot.png)
 
 **Split a diffusion model across two GPUs — either over a gigabit
 network OR between two cards in the same machine. The activations
@@ -18,6 +12,19 @@ silicon.**
 > architectures (Wan, LTX-Video, FLUX.1, SD3.5, …) are on the roadmap
 > further down — let me know which one you want next.
 
+> **Headline:** FLUX.2 Klein 9B at 1024² generates in **~4.4 seconds
+> per image** split across an RTX 5090 + RTX 4090 over plain gigabit
+> ethernet. Only ~0.5 s of that is wire overhead (4 sampler timesteps
+> × ~130 ms round-trip) — the rest is diffusion that would have
+> happened anyway. Full numbers (incl. 1536² and lossless modes)
+> further down.
+
+![Demo workflow with Icarus inline](screenshots/workflow-screenshot.png)
+
+<a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+
+If this project saves you buying a new GPU, please consider donating — it helps me support more models beyond FLUX and keep this thing maintained.
+
 FLUX.2 Klein 9B (a 9 GB model) running on one Nvidia card with its
 back half offloaded to another Nvidia card elsewhere on the LAN.
 **Any modern Nvidia GPU with NVENC works** — 3080 + 4080, 4070 + 5070,
@@ -26,8 +33,6 @@ same model or generation. Or two cards in the same box without NVLink.
 Or your friend's GPU over Tailscale. The bandwidth that would normally
 make this miserable stops being the bottleneck because NVENC compresses
 the bytes on the wire while they're already on the GPU.
-
-
 
 ```
                 ┌─────────────────┐                     ┌─────────────────┐
@@ -38,13 +43,6 @@ the bytes on the wire while they're already on the GPU.
                 └─────────────────┘    ~10 MB / step    └─────────────────┘
                        LoRAs work transparently across the wire
 ```
-
-> **Headline:** FLUX.2 Klein 9B at 1024² generates in **~4.4 seconds
-> per image** split across an RTX 5090 + RTX 4090 over plain gigabit
-> ethernet. Only ~0.5 s of that is wire overhead (4 sampler timesteps
-> × ~130 ms round-trip) — the rest is diffusion that would have
-> happened anyway. Full numbers (incl. 1536² and lossless modes)
-> further down.
 
 ---
 
