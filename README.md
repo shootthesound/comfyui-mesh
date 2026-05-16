@@ -3,6 +3,8 @@
 **ComfyUI Mesh : Icarus** *(the ComfyUI client node)* ↔
 **ComfyUI Mesh : Daedalus** *(the back-half server)*
 
+<a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+
 **Split a diffusion model across two GPUs — either over a gigabit
 network OR between two cards in the same machine. The activations
 between them get compressed live by NVIDIA's idle video codec
@@ -359,7 +361,7 @@ This is independent work by one person. If it saves you the cost of an
 extra GPU, or you'd just like more FLUX-family models / architectures
 supported, **donations make this go faster**:
 
-### ☕ **[buymeacoffee.com/lorasandlenses](https://buymeacoffee.com/lorasandlenses)**
+<a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
 What more support unlocks:
 - **More model architectures.** Highest leverage targets:
