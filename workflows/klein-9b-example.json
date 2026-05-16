@@ -1,7 +1,7 @@
 {
   "id": "604314b6-7bae-4426-a34e-3669e3cb381f",
   "revision": 0,
-  "last_node_id": 24,
+  "last_node_id": 25,
   "last_link_id": 38,
   "nodes": [
     {
@@ -16,7 +16,7 @@
         90
       ],
       "flags": {},
-      "order": 10,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -58,7 +58,7 @@
         460
       ],
       "flags": {},
-      "order": 11,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
@@ -75,46 +75,6 @@
       },
       "widgets_values": [
         "Klein-RefLatentPlus"
-      ]
-    },
-    {
-      "id": 15,
-      "type": "LoraLoaderModelOnly",
-      "pos": [
-        -1272.4174215536495,
-        -276.95519270672054
-      ],
-      "size": [
-        454.32046416153867,
-        101.20560794342248
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 30
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            34
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.21.1",
-        "Node name for S&R": "LoraLoaderModelOnly"
-      },
-      "widgets_values": [
-        "fluxk9b\\ColorTone.safetensors",
-        1
       ]
     },
     {
@@ -268,7 +228,7 @@
         26
       ],
       "flags": {},
-      "order": 8,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {
@@ -305,7 +265,7 @@
         460
       ],
       "flags": {},
-      "order": 9,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -365,7 +325,7 @@
         200
       ],
       "flags": {},
-      "order": 6,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -408,7 +368,7 @@
         365
       ],
       "flags": {},
-      "order": 7,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -469,6 +429,79 @@
       },
       "widgets_values": [
         "REPLACE THE IP ABOVE WITH THE IP OF YOUR SERVER. READ THE README IN THE NODE FOLDER"
+      ]
+    },
+    {
+      "id": 25,
+      "type": "Text Multiline",
+      "pos": [
+        -1254.3545160303916,
+        -97.68365716086548
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "**IMPIRTANT**",
+      "properties": {
+        "cnr_id": "was-ns",
+        "ver": "3.0.1",
+        "Node name for S&R": "Text Multiline"
+      },
+      "widgets_values": [
+        "When you load a lora its weigths get sent to the server so that it effects the entire generation.\n\nIt must be BEFORE the Icarus Node in the flow for this to happen.\n\nThe first load with the Lora is slower than subsiquesnt generations.\n\nSee the Help button on Icarus for more.\n\nYou cna buy me a coffee if you wish here: https://buymeacoffee.com/lorasandlenses\n\n\n\n"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -1269.9293885199422,
+        -260.3682636325966
+      ],
+      "size": [
+        454.32046416153867,
+        101.20560794342248
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 30
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "title": "Lora Loader",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.21.1",
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "fluxk9b\\ColorTone.safetensors",
+        1
       ]
     }
   ],
@@ -569,8 +602,8 @@
       "bounding": [
         -1296.4174215536495,
         -778.9551927067205,
-        502.32046416153867,
-        786.411215886845
+        515.0924134689188,
+        1006.2710164455759
       ],
       "color": "#c47b30",
       "flags": {}
@@ -663,10 +696,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.6588450000000033,
+      "scale": 0.6588450000000007,
       "offset": [
-        1716.4022212064338,
-        1444.6602890837405
+        1439.8884458806313,
+        1352.319574435208
       ]
     },
     "frontendVersion": "1.43.18",
