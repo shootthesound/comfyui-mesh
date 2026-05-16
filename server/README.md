@@ -183,8 +183,12 @@ Where to get the right files:
   [black-forest-labs/FLUX.2-klein-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/tree/main).
 - **LTX 2.3 (LTX-AV 22B Dev):** Lightricks' HuggingFace repo at
   [Lightricks/LTX-2.3-fp8](https://huggingface.co/Lightricks/LTX-2.3-fp8/tree/main).
-  Grab the base model + the distilled LoRA (which slots into the
-  Distill LoRA row in the LTX server GUI).
+  Repo contains both the **base model** and a **pre-distilled
+  variant**. If you grab the distilled variant, you don't need to
+  populate the Distill LoRA row in the LTX server GUI — the
+  distillation is baked into the weights. The Distill LoRA row is
+  there for users running the base model who want to apply the
+  distill LoRA at runtime instead.
 
 Or point the launcher at wherever you keep your checkpoints.
 
