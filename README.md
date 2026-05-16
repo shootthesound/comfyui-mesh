@@ -14,15 +14,18 @@ network OR between two cards in the same machine. The activations
 between them get compressed live by NVIDIA's idle video codec
 silicon.**
 
+> **Models supported today:** FLUX.2 Klein 9B and FLUX.2 dev. Other
+> architectures (Wan, LTX-Video, FLUX.1, SD3.5, …) are on the roadmap
+> further down — let me know which one you want next.
 
-A 9 GB FLUX.2 model running on one Nvidia card with its back half
-offloaded to another Nvidia card elsewhere on the LAN. **Any modern
-Nvidia GPU with NVENC works** — 3080 + 4080, 4070 + 5070, 5090 + 4090,
-whatever you have. The two cards don't have to be the same model or
-generation. Or two cards in the same box without NVLink. Or your
-friend's GPU over Tailscale. The bandwidth that would normally make
-this miserable stops being the bottleneck because NVENC compresses the
-bytes on the wire while they're already on the GPU.
+FLUX.2 Klein 9B (a 9 GB model) running on one Nvidia card with its
+back half offloaded to another Nvidia card elsewhere on the LAN.
+**Any modern Nvidia GPU with NVENC works** — 3080 + 4080, 4070 + 5070,
+5090 + 4090, whatever you have. The two cards don't have to be the
+same model or generation. Or two cards in the same box without NVLink.
+Or your friend's GPU over Tailscale. The bandwidth that would normally
+make this miserable stops being the bottleneck because NVENC compresses
+the bytes on the wire while they're already on the GPU.
 
 
 
@@ -36,9 +39,12 @@ bytes on the wire while they're already on the GPU.
                        LoRAs work transparently across the wire
 ```
 
-For FLUX.2 Klein 9B distilled: **4 sampler timesteps × ~130 ms wire
-round-trip = ~0.5 s of wire overhead per generation**. The rest is
-just diffusion.
+> **Headline:** FLUX.2 Klein 9B at 1024² generates in **~4.4 seconds
+> per image** split across an RTX 5090 + RTX 4090 over plain gigabit
+> ethernet. Only ~0.5 s of that is wire overhead (4 sampler timesteps
+> × ~130 ms round-trip) — the rest is diffusion that would have
+> happened anyway. Full numbers (incl. 1536² and lossless modes)
+> further down.
 
 ---
 
