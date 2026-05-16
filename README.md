@@ -461,14 +461,17 @@ comfyui-mesh/
 
 ---
 
-## Sibling repo
+## Sibling repo — the codec foundation
 
-This rig is one expression of "use NVENC silicon as a wire codec for
-non-video state." Related public work:
+The NVENC codec wrapper that powers the wire compression in this rig
+lives in its own home repo:
 
-- **`torch-nvenc-compress`** — the original PoC. PCA + per-channel quant
-  + NVENC for FLUX mid-block activations and LLM KV cache. Cross-
-  architecture transfer numbers measured.
+- **[shootthesound/torch-nvenc-compress](https://github.com/shootthesound/torch-nvenc-compress)**
+  — the public reference codec library. ComfyUI Mesh is the first
+  application built on top of it; LLM KV-cache work, distributed
+  training, and other tensor-data use cases are coming. The
+  `nvenc_pframe/direct/` folder bundled inside this repo is a
+  vendored copy of that codec.
 
 ---
 
