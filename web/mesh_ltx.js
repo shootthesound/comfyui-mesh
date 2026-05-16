@@ -241,13 +241,24 @@ function _helpHTML() {
 </style>
 <div class="mesh-help">
 
+<h3>🎬 What this node does</h3>
+<ul>
+  <li>Splits LTX 2.3 (LTX-AV 22B Dev / Distilled) across two GPUs.
+      The last <code>n_blocks_remote</code> of the model's 48
+      <code>transformer_blocks</code> run on the back-half server;
+      the rest run locally.</li>
+  <li>Wire compression via the LTX-tuned NVENC codec — same activations
+      that crossed the wire as raw bf16 become ~3× smaller bitstreams
+      without visible quality loss.</li>
+</ul>
+
 <h3>🔌 Connection</h3>
 <ul>
   <li>Indicator at the bottom of the node: <em>green</em> = connected,
       <em>red</em> = disconnected (server died or network gone),
       <em>grey</em> = idle (no queue this session yet).</li>
   <li>Refused / never connects: check the server is running
-      (run <code>run_server_gui.bat</code> on the back-half host),
+      (run <code>run_server_ltx_gui.bat</code> on the back-half host),
       the <code>remote_host</code> + <code>remote_port</code> match,
       and the server's port isn't blocked by a firewall.</li>
   <li>Server died mid-session: just re-queue. Transparent reconnect
@@ -269,52 +280,66 @@ function _helpHTML() {
       applies.</li>
 </ul>
 
-<h3>🎨 LoRAs</h3>
+<h3>🎨 LoRAs — placement controls intent</h3>
 <ul>
-  <li>Workflow ordering matters: <code>LoraLoader</code> must come
-      <em>BEFORE</em> Icarus in the graph for the LoRA to be
-      visible to this node and forwarded to the server.</li>
-  <li>Keep <code>forward_client_loras</code> ON so the LoRA also
-      affects back-half blocks (the ones running on the server).</li>
-  <li>The server can also load its own LoRA at startup (GUI option) —
-      it stacks with whatever the client forwards.</li>
+  <li><em>LoraLoader BEFORE Icarus LTX</em>
+      (with <code>forward_client_loras=ON</code>): the LoRA covers
+      the whole model. Patches targeting back-half blocks get
+      filtered, remapped to slim indices, encoded as safetensors and
+      shipped to the server only when the LoRA set changes (cheap
+      session-id on every other call).</li>
+  <li><em>LoraLoader AFTER Icarus LTX</em>: the LoRA stays local —
+      only the front-half blocks see it. Use this when the same LoRA
+      is already loaded server-side (see next) and you don't want to
+      ship it.</li>
+  <li>The server's GUI has two LoRA slots — the primary slot and a
+      dedicated Distill LoRA row. Loading "always-on" LoRAs there
+      (like the LTX 2.3 distilled LoRA) avoids re-shipping their
+      bytes across the wire per generation.</li>
 </ul>
 
-<h3>⚡ Performance / quality</h3>
+<h3>⚡ Codec mode</h3>
 <ul>
-  <li><code>codec_qp</code>: 18 (default) is sharp. Towards 28 the
-      image gets noticeably softer with visible noise. 10 is
-      near-lossless.</li>
-  <li><code>codec_tile_dim</code>: leave at 4. Higher = fewer larger
-      NVENC frames per encode = faster wall-clock; 4 is the sweet spot.</li>
-  <li>Same machine (two GPUs)? Set <code>codec_mode</code> to
-      <em>raw</em>. PCIe between two GPUs is faster than NVENC
-      encode/decode — codec only helps on slow wires (LAN, VPN,
-      residential broadband).</li>
+  <li><code>Nvenc LTX</code> (default): the LTX-tuned codec.
+      Per-channel percentile-clip quant + sparse exact-correction of
+      outliers. Near-raw quality, ~3× smaller than raw, roughly the
+      same wall-clock as raw on gigabit. <em>Use this.</em></li>
+  <li><code>raw</code>: uncompressed bf16. Useful as a quality
+      baseline; meaningfully faster than the codec only when the
+      wire is faster than codec encode/decode latency (PCIe between
+      two GPUs in the same machine).</li>
+  <li><code>nvenc</code>: plain NVENC HEVC, lighter wire bytes, but
+      can show contrast crush on LTX activations. Kept for parity
+      with the FLUX node; not recommended for LTX content.</li>
 </ul>
 
 <h3>🧩 ComfyUI version mismatch (silent-correctness gotcha)</h3>
 <ul>
   <li>The server runs its own ComfyUI clone (in the server folder's
-      <code>..\\ComfyUI</code>). The fp8 detection + FLUX implementation
-      evolve in upstream over time; a big drift between the version
-      this client uses and the version the server uses can produce
-      subtly wrong output with no error.</li>
-  <li>Fix on the server host: run <code>update_comfy.bat</code> in the
-      server folder. <code>git pull</code>s ComfyUI + re-installs its
-      requirements.</li>
+      <code>.\\ComfyUI</code>). The fp8 detection + LTX-AV
+      implementation evolve in upstream over time; a big drift
+      between the version this client uses and the version the
+      server uses can produce subtly wrong output with no error.</li>
+  <li>Fix on the server host: run <code>update_comfy.bat</code> in
+      the server folder. <code>git pull</code>s ComfyUI + re-installs
+      its requirements.</li>
   <li>This node doesn't know the server's ComfyUI version (the wire
       protocol doesn't carry it), so we can't warn you automatically
       — keep both ends reasonably current to avoid drift.</li>
 </ul>
 
-<h3>📦 Files</h3>
+<h3>📦 Server-side files</h3>
 <ul>
   <li>Server install: <code>install.bat</code> in the server folder
       (one-shot — venv + ComfyUI clone + cu128 torch + deps).</li>
   <li>Server update: <code>update_comfy.bat</code> (the one above).</li>
-  <li>Server launch: <code>run_server_gui.bat</code> (recommended) or
-      <code>run_server.bat</code> (headless).</li>
+  <li>LTX server launch: <code>run_server_ltx_gui.bat</code>
+      (recommended), or one of <code>run_server_ltx.bat</code> /
+      <code>_gpu0</code> / <code>_gpu1</code> / <code>_cpu</code> for
+      headless launches.</li>
+  <li>Model weights for LTX 2.3 (base + pre-distilled variant):
+      Lightricks' HuggingFace repo at
+      <code>huggingface.co/Lightricks/LTX-2.3-fp8</code>.</li>
 </ul>
 
 <h3>💬 Help / feedback</h3>
@@ -322,7 +347,7 @@ function _helpHTML() {
   <li>Bug / feature request: see the project's README for contact
       details.</li>
   <li>If this rig saves you a GPU and you'd like more model
-      architectures supported (Wan, LTX-Video, FLUX.1, SD3.5 …),
+      architectures supported (Wan, FLUX.1, SD3.5 …),
       <code>buymeacoffee.com/lorasandlenses</code> — community demand
       drives priority.</li>
 </ul>
