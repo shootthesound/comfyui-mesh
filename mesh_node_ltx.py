@@ -1073,13 +1073,17 @@ class MeshSplitLTX:
                                            )}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535,
                                         "tooltip": "TCP port the back-half server is listening on. Default 7777."}),
-                "codec_mode": (["Nvenc LTX", "raw"], {"default": "Nvenc LTX",
+                "codec_mode": (["Nvenc LTX", "nvenc", "raw"], {"default": "Nvenc LTX",
                                                   "tooltip": (
                                                       "How activations get put on the wire. "
                                                       "'Nvenc LTX' = LTX-tuned codec: NVENC HEVC + per-channel "
                                                       "percentile-clip quant + sparse exact-correction of "
                                                       "outliers. Near-raw quality, ~3× smaller than raw, "
                                                       "roughly the same wall-clock as raw on gigabit. "
+                                                      "'nvenc' = plain NVENC HEVC (no outlier correction). "
+                                                      "Smaller bitstream than 'Nvenc LTX' but loses within-"
+                                                      "channel precision on heavy-tailed distributions — "
+                                                      "look for contrast crush before trusting it on LTX. "
                                                       "'raw' = uncompressed bf16 — only meaningfully faster "
                                                       "when the wire is faster than the codec encode/decode "
                                                       "latency, e.g. PCIe between two GPUs in the same machine."
