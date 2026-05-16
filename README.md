@@ -322,23 +322,37 @@ have to hunt the console for status:
 
 ## Honest performance numbers
 
-End-to-end wall-clock numbers are being re-measured against the
-client-side slim-load (which just landed) on FLUX.2 Klein 9B distilled,
-1024×1024, 4 sampler steps, RTX 5090 client + RTX 4090 server over
-gigabit LAN with `tile_dim=4`. Updating this section as soon as the
-real numbers are in.
+End-to-end wall-clock per generated image. FLUX.2 Klein 9B distilled,
+4 sampler steps, RTX 5090 desktop client + RTX 4090 laptop server,
+gigabit ethernet, `n_blocks_remote = 12`, `tile_dim = 4`.
 
-What's known and stable today:
+| Resolution | NVENC `qp = 18` | NVENC lossless | Raw (no codec) |
+|---|---:|---:|---:|
+| 1024 × 1024 | **4.38 s** | 4.70 s | 7.20 s |
+| 1536 × 1536 | **4.41 s** | 5.15 s | 9.13 s |
 
-- Wire round-trip ~130 ms at QP=18 / `tile_dim=4` (codec encode + LAN +
-  remote forward + LAN + codec decode), measured per timestep.
-- Wire payload ~10–12 MB per direction at QP=18 — well within gigabit
-  ethernet's headroom, so the link isn't the bottleneck.
-- Codec quality: cosine similarity > 0.995 per round-trip at QP=18 on
-  real FLUX activations. Output is visually indistinguishable from
-  all-local at the same seed for any QP up to 28 — FLUX's residual
-  stream absorbs codec noise comfortably (the load-bearing
-  architectural assumption the whole rig depends on).
+A few things worth pulling out of that table:
+
+- **Compression beats raw by a wide margin and the gap widens with
+  resolution.** At 1024² the codec saves you ~2.8s per image (39%
+  faster); at 1536² it saves ~4.7s (52%). Activations grow with
+  resolution but NVENC compresses bigger frames just as well, so the
+  wire stops being the bottleneck.
+- **NVENC `qp=18` is essentially free vs lossless** at default settings
+  — 0.3s difference at 1024², 0.7s at 1536² — and FLUX's residual
+  stream absorbs the QP=18 codec noise comfortably (cosine similarity
+  > 0.995 per round-trip; visually indistinguishable from all-local at
+  the same seed up to roughly QP=28).
+- **Resolution barely affects NVENC wall-clock** (4.38 → 4.41s, ~1%
+  increase from 1024² to 1536²), because the codec compresses the
+  bigger activations to similar wire payloads. Raw mode jumps 27% over
+  the same resolution increase because every extra byte traverses the
+  wire literally.
+
+Headline: at QP=18 you're paying about **~130 ms per timestep** for
+the codec encode + LAN + remote forward + LAN + codec decode, regardless
+of which side has the bigger activations. The rest of the image-time is
+diffusion that would have happened anyway.
 
 ---
 
