@@ -1055,7 +1055,7 @@ class MeshSplitLTX:
         return {
             "required": {
                 "model": ("MODEL",),
-                "n_blocks_remote": ("INT", {"default": 4, "min": 0, "max": 256,
+                "n_blocks_remote": ("INT", {"default": 11, "min": 0, "max": 256,
                                             "tooltip": (
                                                 "How many transformer blocks run on the remote server. "
                                                 "Counts double_blocks first, then single_blocks. "

@@ -395,7 +395,7 @@ class MeshServerGUI:
         row = _Frame(self.root)
         row.pack(fill=X, **pad)
         _Label(row, text="n_blocks:", width=12, anchor="w").pack(side=LEFT)
-        self.n_blocks_var = IntVar(value=int(s.get("n_blocks", 4)))
+        self.n_blocks_var = IntVar(value=int(s.get("n_blocks", 11)))
         self.n_blocks_spin = ttk.Spinbox(
             row, from_=0, to=999, increment=1, textvariable=self.n_blocks_var, width=8,
         )
@@ -558,7 +558,7 @@ class MeshServerGUI:
         try:
             n_blocks = int(self.n_blocks_var.get())
         except Exception:
-            n_blocks = 4
+            n_blocks = 11
         try:
             port = int(self.port_var.get())
         except Exception:
