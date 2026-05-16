@@ -90,8 +90,176 @@ import lora_io
 
 
 # ---------------------------------------------------------------------
-# Model loading
+# Model loading — LTXAV (audio+video) variant
+#
+# LTX checkpoints use the HF-style nested prefix:
+#   model.diffusion_model.transformer_blocks.{N}.attn1.to_k.weight
+# (vs FLUX's bare double_blocks.{N}.img_attn.qkv.weight). Both go through
+# ComfyUI's comfy.sd.load_diffusion_model_state_dict the same way, but
+# the slim-load + fp8 metadata remap need to preserve the LTX prefix.
+#
+# LTXAV vs LTXV detection: every block in LTXAV has audio_attn1 / audio_*
+# substructures alongside the video attn1/attn2. LTXV blocks don't. We
+# raise if it's LTXV (separate iteration).
 # ---------------------------------------------------------------------
+
+_LTX_BLOCK_PREFIX = "model.diffusion_model.transformer_blocks."
+_LTX_DIFFUSION_PREFIX = "model.diffusion_model."
+_LTX_AV_MARKER = "audio_attn1"  # exists only in LTXAV BasicTransformerBlock
+
+
+def load_ltx_av(
+    weights_path: Path,
+    device: torch.device,
+    dtype: torch.dtype,
+    n_blocks: int | None = None,
+):
+    """Slim-load the back-half of an LTX-AV (audio+video) checkpoint.
+
+    `n_blocks` counts transformer_blocks (a flat list — 48 for the
+    22B Dev model). Loads the LAST n_blocks blocks; client runs the
+    first (total - n_blocks).
+
+    Reads via safetensors.safe_open() so disk I/O is exactly the bytes
+    we keep — no full-model spike in CPU RAM or VRAM at any point.
+
+    Non-block components under model.diffusion_model.* (audio /
+    video embeddings connectors, *_adaln_single, av_ca_* modulations,
+    *_patchify_proj, *_proj_out) are kept (~hundreds of MB combined)
+    because ComfyUI's model detector needs them to identify the
+    architecture as LTXAV (vs LTXV — the AV variant has additional
+    audio_* heads + av_ca_* modulations). They sit unused on the
+    server side but cost relatively little vs the full model.
+
+    Top-level audio_vae / vocoder / vae / text_embedding_projection
+    are DROPPED — they run on the client (or via separate ComfyUI
+    nodes: LTXVAudioVAELoader, LTXAVTextEncoderLoader).
+    """
+    import json
+    from safetensors import safe_open
+    import comfy.sd
+    import comfy.model_management
+
+    print(f"[server] reading checkpoint header from {weights_path}")
+    with safe_open(str(weights_path), framework="pt", device="cpu") as f:
+        all_keys = list(f.keys())
+        metadata = f.metadata() or {}
+
+        # 1. Detect block count + AV variant from key names.
+        block_indices = set()
+        is_av = False
+        for k in all_keys:
+            if k.startswith(_LTX_BLOCK_PREFIX):
+                rest = k[len(_LTX_BLOCK_PREFIX):]
+                try:
+                    idx = int(rest.split(".")[0])
+                except ValueError:
+                    continue
+                block_indices.add(idx)
+                if _LTX_AV_MARKER in rest:
+                    is_av = True
+
+        total_blocks = (max(block_indices) + 1) if block_indices else 0
+        if total_blocks == 0:
+            raise RuntimeError(
+                f"no model.diffusion_model.transformer_blocks.* tensors found "
+                f"in {weights_path} — is this really an LTX safetensors file?"
+            )
+        if not is_av:
+            raise RuntimeError(
+                "this checkpoint appears to be LTXV (video-only). The current "
+                "Daedalus LTX implementation targets LTXAV (audio+video, e.g. "
+                "ltx-2.3-22b-dev). LTXV support is a separate iteration."
+            )
+
+        if n_blocks is None or n_blocks >= total_blocks:
+            n_remote = total_blocks
+        elif n_blocks <= 0:
+            n_remote = total_blocks
+        else:
+            n_remote = n_blocks
+        drop_first = total_blocks - n_remote
+
+        print(f"[server] checkpoint: LTXAV with {total_blocks} transformer_blocks")
+        print(f"[server] loading last {n_remote} blocks (skipping first "
+              f"{drop_first}); will be remapped to slim indices 0..{n_remote - 1}")
+
+        # 2. Build the slim state dict.
+        sd_slim = {}
+        for k in all_keys:
+            if k.startswith(_LTX_BLOCK_PREFIX):
+                rest = k[len(_LTX_BLOCK_PREFIX):]
+                idx = int(rest.split(".")[0])
+                if idx < drop_first:
+                    continue  # front-half block, client runs it
+                tail = ".".join(rest.split(".")[1:])
+                new_key = f"{_LTX_BLOCK_PREFIX}{idx - drop_first}.{tail}"
+                sd_slim[new_key] = f.get_tensor(k)
+                continue
+            if k.startswith(_LTX_DIFFUSION_PREFIX):
+                # Non-block diffusion_model.* components — keep for arch detection
+                sd_slim[k] = f.get_tensor(k)
+                continue
+            # Else: top-level vae / vocoder / audio_vae / text_embedding_projection
+            # — drop. The client owns these via separate ComfyUI nodes.
+
+        slim_bytes = sum(t.numel() * t.element_size() for t in sd_slim.values())
+        print(f"[server] slim state dict: {len(sd_slim)} tensors, "
+              f"{slim_bytes/1024/1024/1024:.2f} GB "
+              f"(full model on disk: ~28 GB)")
+
+        # 3. Remap fp8 quantization metadata the same way.
+        if "_quantization_metadata" in metadata:
+            qm = json.loads(metadata["_quantization_metadata"])
+            layers = qm.get("layers", {})
+            new_layers = {}
+            for layer_name, cfg in layers.items():
+                if layer_name.startswith(_LTX_BLOCK_PREFIX):
+                    rest = layer_name[len(_LTX_BLOCK_PREFIX):]
+                    idx = int(rest.split(".")[0])
+                    if idx < drop_first:
+                        continue
+                    tail = ".".join(rest.split(".")[1:])
+                    new_layers[f"{_LTX_BLOCK_PREFIX}{idx - drop_first}.{tail}"] = cfg
+                    continue
+                if layer_name.startswith(_LTX_DIFFUSION_PREFIX):
+                    new_layers[layer_name] = cfg
+                    continue
+                # Drop top-level vae/vocoder/etc fp8 entries
+            qm["layers"] = new_layers
+            metadata = dict(metadata)
+            metadata["_quantization_metadata"] = json.dumps(qm)
+            print(f"[server] remapped {len(layers)} fp8 layer entries "
+                  f"-> {len(new_layers)} for slim model")
+
+    # 4. Hand the slim SD to ComfyUI's loader.
+    print(f"[server] handing slim state dict to comfy.sd.load_diffusion_model_state_dict")
+    model_options = {"dtype": dtype}
+    patcher = comfy.sd.load_diffusion_model_state_dict(
+        sd_slim, model_options=model_options, metadata=metadata,
+    )
+    if patcher is None:
+        raise RuntimeError(
+            "comfy.sd.load_diffusion_model_state_dict returned None for the slim "
+            "state dict. Likely a detection failure — check the checkpoint is an "
+            "LTX 22B AV safetensors file and that the local ComfyUI version "
+            "supports LTX (comfy/ldm/lightricks/av_model.py)."
+        )
+    sd_slim.clear()
+    comfy.model_management.load_models_gpu([patcher], force_full_load=True)
+
+    diffusion = patcher.model.diffusion_model
+    n_loaded = len(diffusion.transformer_blocks)
+    print(f"[server] LTXAV model loaded; transformer_blocks={n_loaded} "
+          f"class={type(diffusion).__name__}")
+
+    patcher._mesh_slim_meta = {
+        "drop_first": drop_first,
+        "total_blocks": total_blocks,
+        "variant": "ltxav",
+    }
+    return patcher
+
 
 def load_flux2_klein(
     weights_path: Path,
@@ -719,59 +887,26 @@ def serve(patcher, host: str, port: int, device: torch.device,
 
 
 def main():
-    # ----- LTX back-half server: WIP -----
-    # The body of this file is the verbatim FLUX server clone. It will
-    # NOT correctly handle an LTX checkpoint — the slim-load logic walks
-    # double_blocks + single_blocks (FLUX layout), the forward path
-    # calls FLUX block signatures, and the fp8 metadata remap assumes
-    # the FLUX naming scheme.
-    #
-    # What's needed to make this real (next iteration):
-    #   1. Slim-load LTX: walk `transformer_blocks.{N}.*` keys instead of
-    #      `double_blocks` + `single_blocks`. LTXVModel has 28 layers,
-    #      LTXAVModel has 48.
-    #   2. Detect LTXVModel vs LTXAVModel at load time and either dispatch
-    #      to the right forward signature or raise (AV is the bigger
-    #      lift; V0 should support LTXV only).
-    #   3. forward_back_half_ltx that calls each loaded transformer_block
-    #      with the LTX signature (img, context, attention_mask, timestep,
-    #      pe, self_attention_mask, prompt_timestep) and returns only img.
-    #   4. LTX block parameter signature differs from FLUX
-    #      (BasicTransformerBlock layout, not DoubleStreamBlock). The
-    #      slim-load + fp8 metadata remap need LTX-specific handling.
-    #
-    # Until then, refuse to start so users don't get cryptic errors deep
-    # inside the FLUX-only code path.
-    import sys as _sys
-    print(
-        "[server] ComfyUI Mesh : Daedalus LTX — WIP. The LTX-specific "
-        "back-half forward + slim-load are not yet implemented; this "
-        "file is currently a scaffold on the experimental branch. "
-        "Use mesh_server.py for FLUX.2 today.",
-        file=_sys.stderr,
-    )
-    _sys.exit(2)
-
     p = argparse.ArgumentParser()
-    p.add_argument("--weights", type=Path, required=True, help="Path to ltx-2.3-22b-dev-fp8.safetensors")
+    p.add_argument("--weights", type=Path, required=True,
+                   help="Path to an LTX safetensors file (e.g. ltx-2.3-22b-dev-fp8.safetensors)")
     p.add_argument("--bind", type=str, default="0.0.0.0")
     p.add_argument("--port", type=int, default=7777)
     p.add_argument("--device", type=str, default="cuda:0")
     p.add_argument("--dtype", type=str, default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
     p.add_argument("--n-blocks", type=int, default=None,
-                   help="How many transformer blocks the server runs. Counts "
-                        "doubles first, then singles. e.g. for FLUX.2 Klein 9B "
-                        "(8 doubles + 24 singles): N=4 -> last 4 doubles only. "
-                        "N=8 -> all doubles. N=9 -> all doubles + first 1 single. "
-                        "N=32 -> all doubles + all singles (entire back-half). "
-                        "MUST match the client node's `n_blocks_remote` setting. "
-                        "If omitted, loads every block (full back-half).")
+                   help="How many transformer_blocks the server runs. LTX is a "
+                        "flat transformer (no double/single split): "
+                        "LTXAV 22B has 48 blocks total. N=24 -> last 24 blocks. "
+                        "N=12 -> last 12 blocks. MUST match the Icarus LTX "
+                        "node's n_blocks_remote setting. If omitted, loads "
+                        "every block (full back-half).")
     p.add_argument("--lora", type=Path, default=None,
                    help="Path to a LoRA safetensors file to apply to the slim "
-                        "back-half model. References to layers the server doesn't "
-                        "hold (front-half doubles, tail singles, encoders, "
-                        "final_layer) are silently dropped.")
+                        "back-half model. References to layers the server "
+                        "doesn't hold (front-half blocks, encoders, etc.) are "
+                        "silently dropped via ComfyUI's standard pipeline.")
     p.add_argument("--lora-strength", type=float, default=1.0,
                    help="LoRA strength multiplier (default 1.0).")
     args = p.parse_args()
@@ -779,16 +914,29 @@ def main():
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
     device = torch.device(args.device)
 
-    patcher = load_flux2_klein(args.weights, device, dtype, n_blocks=args.n_blocks)
+    print("=" * 64)
+    print("ComfyUI Mesh : Daedalus LTX (experimental branch)")
+    print("Slim-load: IMPLEMENTED. LTXAV detection + indexing: IMPLEMENTED.")
+    print("Wire protocol (forward_back_half_ltx + per-block payload):")
+    print("    NOT YET IMPLEMENTED.")
+    print("Server will load the model + apply LoRA if given, then EXIT")
+    print("before opening the TCP listener. Use this run to verify that")
+    print("slim-load works for your checkpoint before the wire path lands.")
+    print("=" * 64)
+
+    patcher = load_ltx_av(args.weights, device, dtype, n_blocks=args.n_blocks)
     if args.lora is not None:
         if not args.lora.is_file():
             raise FileNotFoundError(f"LoRA file not found: {args.lora}")
         apply_server_lora(patcher, args.lora, args.lora_strength)
-    serve(
-        patcher, args.bind, args.port, device,
-        server_lora_path=args.lora,
-        server_lora_strength=args.lora_strength,
-    )
+
+    print()
+    print("[server] LTX slim-load smoke-test complete; exiting (wire path WIP).")
+    print("[server] Next iteration will wire up serve() with the LTX-AV per-")
+    print("[server] block payload (~13 tensors per timestep) — see WIP notes")
+    print("[server] in mesh_server_ltx.py and mesh_node_ltx.py for the design.")
+    import sys as _sys
+    _sys.exit(0)
 
 
 if __name__ == "__main__":
