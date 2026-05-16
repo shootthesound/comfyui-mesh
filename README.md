@@ -410,6 +410,10 @@ supported, **donations make this go faster**:
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
 
+**Why it matters to me**
+
+I'm a parent working from home, supporting a long-term ill child alongside my wife. As much as this dev work is a passion, it's also a needed distraction — and donations genuinely help keep the lights on right now.
+
 What more support unlocks:
 - **More model architectures.** Highest leverage targets:
   **Wan** (image + video, hugely popular ComfyUI workload),
@@ -423,10 +427,6 @@ What more support unlocks:
   wall-clock parity with all-local
 - **Activation pre-stage cache** — skip re-shipping unchanged `pe` /
   `vec_orig` etc within a generation
-
-**Why it matters to me**
-
-I'm a parent working from home, supporting a long-term ill child alongside my wife. As much as this dev work is a passion, it's also a needed distraction — and donations genuinely help keep the lights on right now.
 
 ---
 
