@@ -291,21 +291,35 @@ There are no `codec_qp` / `codec_lossless` / `codec_tile_dim` widgets
 on the LTX node — those are pinned internally at the sweet spot that
 works for LTX activations.
 
-#### ⚠️ Workflow placement — put Icarus LTX directly after the model loader
+#### ⚠️ Workflow placement — LoraLoader position depends on intent
 
-The Icarus LTX node should be the **very next node after the LTX
-model loader**, before any LoraLoader or anything else that touches
-the MODEL. This is what makes the client-side VRAM strip work: the
-node strips the back-half transformer_blocks from the client model
-the first time it runs, freeing ~0.4 GB per stripped block. If
-LoraLoader (or any other MODEL-patching node) runs between the
-loader and Icarus LTX, those patches land on blocks that are about
-to be stripped, which either silently drops the patches or breaks
-the strip's accounting. Keep the chain:
+The Icarus LTX node should sit between the LTX model loader and
+KSampler. **Where you put your LoraLoader relative to Icarus LTX
+controls whether the LoRA reaches the server's back-half blocks:**
 
-```
-LTX model loader → Icarus LTX → (LoraLoader, sampler, everything else)
-```
+- **LoraLoader BEFORE Icarus LTX** (with `forward_client_loras=ON`)
+  → the LoRA's patches are on the patcher when Icarus LTX captures
+  it; per timestep the node filters + remaps the back-half-targeting
+  patches, ships them via safetensors-encoded blob (only on session
+  change, not every step), and the server applies them to its slim
+  model. Net effect: the LoRA covers the whole model.
+  ```
+  LTX model loader → LoraLoader → Icarus LTX → KSampler
+  ```
+
+- **LoraLoader AFTER Icarus LTX** → the LoRA applies only to the
+  front-half blocks running locally; the server's back-half never
+  sees it. Use this when you specifically want a local-only LoRA, or
+  when the LoRA is already loaded server-side (see next note) and
+  you don't want to ship it.
+  ```
+  LTX model loader → Icarus LTX → LoraLoader → KSampler
+  ```
+
+The first call after a LoRA change ships the encoded blob (can be
+hundreds of MB for big LoRAs); subsequent timesteps within the same
+generation send only the small session id. Swap LoRAs across gens
+and the next gen pays the blob cost once.
 
 #### ⚠️ Distilled LoRA — load it in the server, not in the workflow
 
@@ -314,16 +328,17 @@ not the pre-distilled model variant), **always load it via the
 Daedalus LTX server GUI's "Distill LoRA" row, NOT via a workflow
 LoraLoader**. The server applies it once at startup to the
 back-half blocks; the client applies the same LoRA locally to the
-front-half blocks (via whatever your normal local-LoRA path is, or
-via the model already having it baked in). Net effect: the LoRA
-covers the whole model without ever crossing the wire.
+front-half blocks (place a LoraLoader AFTER Icarus LTX with the same
+file, so it stays local-only). Net effect: the LoRA covers the
+whole model without ever crossing the wire.
 
-The alternative — putting it in a workflow LoraLoader with
-`forward_client_loras=ON` — would ship the LoRA bytes across the
-network on every generation. For the LTX distilled LoRA specifically
-that's hundreds of MB per generation of wasted wire time. The
-server-side slot is the right home for any "always-on" LoRA you'd
-otherwise forward.
+The alternative — putting it in a workflow LoraLoader BEFORE Icarus
+LTX with `forward_client_loras=ON` — would ship the LoRA bytes
+across the network on every fresh generation that triggers a
+session-id change. For the LTX distilled LoRA specifically that's
+hundreds of MB of wasted wire time for a LoRA that never changes.
+The server-side slot is the right home for any "always-on" LoRA
+you'd otherwise forward.
 
 ### Server side
 
