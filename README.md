@@ -94,31 +94,62 @@ the priority list.
 
 ## Quick start — cross-machine (the headline use case)
 
-Two physical machines, one running ComfyUI, the other running the
-mesh server. Connected over your LAN or Tailscale.
+Two physical machines: one running ComfyUI (**Icarus** lives here),
+one running the back-half server (**Daedalus** lives here). Connected
+over your LAN or Tailscale.
 
-### On the ComfyUI host
+### 1. Install Icarus (the ComfyUI node) on the ComfyUI host
 
-1. Drop the `comfyui-mesh/` folder into `ComfyUI/custom_nodes/`.
-2. Restart ComfyUI. The Manager runs `pip install -r requirements.txt`
-   automatically — that's a single line, `cuda-bindings`. The codec
-   wrapper (`nvenc_pframe/`) is **bundled in the folder**, no separate
-   install.
-3. The nodes appear under the `mesh` category. You're done.
+Pick whichever route you prefer:
 
-### On the back-half host
+**Via ComfyUI Manager** (easiest if you have it):
+- Open Manager → "Install via Git URL" → paste this repo's URL → restart.
 
-1. Copy the `server/` folder somewhere convenient.
-2. Open a terminal in that folder and run **one command**:
+**Via git clone:**
+```
+cd ComfyUI/custom_nodes
+git clone <repo-url> comfyui-mesh
+```
+
+**Drop-in copy:**
+- Copy or unzip the `comfyui-mesh/` folder into
+  `ComfyUI/custom_nodes/`.
+
+After ComfyUI restarts, the Manager runs `pip install -r requirements.txt`
+automatically — it's a single line, `cuda-bindings`. The codec wrapper
+(`nvenc_pframe/`) is **bundled in the folder**, no separate install.
+The Icarus node appears in the node menu under the `mesh` category.
+
+### 2. Deploy Daedalus (the back-half server) on the OTHER machine
+
+The `server/` subfolder of this repo is a self-contained deploy. Get
+it onto the other machine by whichever means you prefer:
+
+- **git clone the whole repo** there too, and use just the `server/`
+  subfolder.
+- **Copy the `server/` folder over the network** (USB stick / SMB
+  share / SCP / `rsync` etc).
+- **Zip + transfer** if cross-OS.
+
+You don't need ComfyUI installed on the back-half host beforehand —
+the installer below clones it for you.
+
+Then on the back-half host, in a terminal in the `server/` folder:
+
+1. Run the one-shot installer:
    ```
    install.bat
    ```
-   It creates a `.venv`, clones ComfyUI as a sibling folder if missing,
-   installs torch + cuda-bindings + dependencies, runs an env check.
-   Re-running is idempotent.
-3. Drop your FLUX.2 safetensors checkpoint in the folder
-   (`flux-2-klein-9b-fp8.safetensors` etc).
-4. Launch via the GUI (recommended for first run):
+   Creates a `.venv`, clones ComfyUI as a sibling folder if missing,
+   installs CUDA-enabled torch (cu128 — covers RTX 30/40/50 series),
+   installs dependencies, runs a pre-flight check. Multi-GB,
+   takes a minute or two on a fast connection. Re-runs are idempotent.
+
+2. Drop your FLUX.2 safetensors checkpoint into the same `server/`
+   folder (e.g. `flux-2-klein-9b-fp8.safetensors` or
+   `flux2_dev_fp8mixed.safetensors`).
+
+3. Launch via the GUI (recommended for first run):
    ```
    run_server_gui.bat
    ```
@@ -127,6 +158,12 @@ mesh server. Connected over your LAN or Tailscale.
    Server**.
 
 The server prints `[server] READY — listening on 0.0.0.0:7777 (n_blocks=4: 4D + 0S)` when ready.
+
+**For more detail** (manual install path, headless `.bat` launchers,
+same-host two-GPU pinning, troubleshooting matrix, log-format
+reference, network setup tips, `update_comfy.bat` for keeping the
+server's ComfyUI in sync with the client's): see the
+[`server/README.md`](server/README.md).
 
 ### Wire it up in a workflow
 
