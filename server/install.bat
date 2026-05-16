@@ -158,4 +158,8 @@ echo  The server listens on 0.0.0.0:7777 by default. Tell the
 echo  ComfyUI client this host's LAN/Tailscale IP and that port.
 echo.
 
+REM Hold the window open so a double-clicked install lets you read the
+REM summary above before the cmd window closes.
+pause
+
 endlocal

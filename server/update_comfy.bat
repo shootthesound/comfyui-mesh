@@ -84,4 +84,8 @@ echo  Update complete. Restart the server to pick up the new code.
 echo ============================================================
 echo.
 
+REM Hold the window open so a double-clicked update lets you read the
+REM summary above before the cmd window closes.
+pause
+
 endlocal
