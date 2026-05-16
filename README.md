@@ -72,7 +72,10 @@ That's it. The rest is plumbing.
   - Cross-machine over LAN (gigabit OK, 2.5G/10G better)
   - Cross-machine over Tailscale (residential broadband fine for
     FLUX.2-distilled's 4-step samplers)
-  - Same machine with two GPUs (no NVLink required)
+  - Same machine with two GPUs (no NVLink required) — *the rig is
+    set up to handle this cleanly but I haven't been able to test it
+    end-to-end myself; community feedback welcome. See the same-host
+    quickstart below for the expected setup.*
 
 **Models that are NOT supported (yet)** — anything that isn't FLUX.2.
 The architectural differences are real (block signatures, modulation,
@@ -188,15 +191,24 @@ per timestep, with byte counts. Done.
 
 ## Quick start — same machine, two GPUs (no NVLink)
 
-ComfyUI and the server live on the same machine but pinned to different
-GPUs. You get to use a 4090 + 5090 (or any pair) without buying
-NVLink-capable cards.
+ComfyUI (Icarus) and the back-half server (Daedalus) live on the same
+machine but each pinned to a different GPU. You get to use any pair
+of NVENC-capable Nvidia cards (3080 + 4080, 4090 + 5090, mix-and-
+match) without buying NVLink-capable cards.
 
-1. On the same host, install the node (as above) and the server
-   (as above).
+> **Heads-up on testing.** I've set this rig up to handle the
+> same-host two-GPU topology cleanly — the GPU-pinning launchers, the
+> `codec_mode=raw` shortcut on PCIe, the loopback host — but I haven't
+> personally been able to run an end-to-end same-host test on a
+> two-GPU box. The pieces should all work; if you hit a snag, please
+> open an issue (or ping me) so we can shake it out. Community
+> feedback on this path is genuinely useful.
+
+1. On the same host, install Icarus (as above) and deploy Daedalus
+   (as above) — both can sit on the same machine.
 2. Launch ComfyUI normally — it grabs whatever GPU it sees first
    (usually `cuda:0`).
-3. Launch the server **pinned to the OTHER GPU**:
+3. Launch Daedalus **pinned to the OTHER GPU**:
    ```
    run_server_gpu1.bat    # pins server to physical GPU 1
    ```
