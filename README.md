@@ -5,8 +5,8 @@
 
 **Split a diffusion model across two GPUs — either over a gigabit
 network OR between two cards in the same machine. The activations
-between them get compressed live by NVIDIA's idle video codec
-silicon.**
+between them get compressed live by NVIDIA's NVENC idle silicon
+through a codec I designed to abstract model activation data.**
 
 > **Supported today:** FLUX.2 Dev and FLUX.2 Klein 9B. Other
 > architectures (Wan, LTX-Video, FLUX.1, SD3.5, …) are on the roadmap
