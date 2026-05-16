@@ -617,10 +617,13 @@ class MeshServerGUI:
             self.weights_var.set(path)
 
     def _on_browse_lora(self):
-        # Prefer the user's typical loras folder if we can find one
+        # Prefer the user's typical loras folder if we can find one.
+        # All candidates are LOCAL paths only — checking an unmapped
+        # network drive via is_dir() can block for tens of seconds and
+        # hang the GUI's main thread.
         lora_dirs = [
             HERE / "loras",
-            Path("S:/Auto/ComfyUI_SEC/ComfyUI/models/loras"),
+            HERE / "ComfyUI" / "models" / "loras",
             HERE,
         ]
         initial = next((str(p) for p in lora_dirs if p.is_dir()), str(HERE))
