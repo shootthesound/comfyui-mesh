@@ -363,7 +363,7 @@ The LTX GUI is the same shape as the FLUX one (model picker,
 n_blocks spinbox, port/bind/device/dtype rows, start/stop, log
 view) with two LTX-specific extras:
 
-- **n_blocks defaults to 11** — matches the Icarus LTX node's
+- **n_blocks defaults to 8** — matches the Icarus LTX node's
   default. LTX-AV 22B has 48 transformer_blocks total.
 - **Two LoRA rows** instead of one:
   - **LoRA / LoRA strength** — primary slot, default strength 1.0.
@@ -387,7 +387,7 @@ as the FLUX one, plus `--lora2` / `--lora2-strength`:
 ```
 python mesh_server_ltx.py \
     --weights ltx-2.3-22b-dev-fp8.safetensors \
-    --n-blocks 11 \
+    --n-blocks 8 \
     --port 7777 \
     --bind 0.0.0.0 \
     --device cuda:0 \

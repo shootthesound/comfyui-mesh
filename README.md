@@ -275,7 +275,7 @@ The LTX node has a deliberately smaller surface than the FLUX one:
 | Parameter | Default | What it controls |
 |---|---|---|
 | `model` | — | The loaded LTX-AV MODEL |
-| `n_blocks_remote` | 11 | How many of LTX's 48 transformer_blocks run remotely. Increase = more offload, smaller client VRAM. |
+| `n_blocks_remote` | 8 | How many of LTX's 48 transformer_blocks run remotely. Increase = more offload, smaller client VRAM. |
 | `remote_host` | `127.0.0.1` | Hostname/IP of the back-half server |
 | `remote_port` | `7777` | TCP port |
 | `codec_mode` | `Nvenc LTX` | `Nvenc LTX` = LTX-tuned codec (NVENC HEVC + per-channel percentile-clip quant + sparse exact-correction of outliers; near-raw quality, ~3× smaller than raw, roughly the same wall-clock as raw on gigabit). `nvenc` = plain NVENC HEVC, lighter wire, can show contrast crush on LTX. `raw` = uncompressed bf16. |
@@ -371,10 +371,11 @@ within the gen send only the small id.
 #### Server VRAM headroom — 16+ GB recommended
 
 A practical note on sizing the back-half host: **with 16+ GB of
-VRAM the LTX server has comfortable room** to slim-load 11–24
+VRAM the LTX server has comfortable room** to slim-load 8–24
 back-half blocks AND stack one or two LoRAs on top. On a 12 GB
-card (or smaller) you may need to lower `n_blocks_remote` to ~10
-or fewer to fit a sizeable LoRA without bumping into ComfyUI's
+card (or smaller) you may need to keep `n_blocks_remote` near the
+default of 8 (or even lower) to fit a sizeable LoRA without
+bumping into ComfyUI's
 dynamic-offload heuristics, which start swapping weights in and
 out of VRAM mid-generation and can slow the per-step forward
 noticeably. Symptom to watch for: per-step forward time on the
@@ -410,7 +411,7 @@ Both server-side LoRAs apply to the slim-loaded back-half blocks at
 server startup (or restart on a settings change). Stacking them
 server-side avoids the wire cost of forwarding them per generation.
 
-`n_blocks` on the server GUI defaults to **11** to match the LTX
+`n_blocks` on the server GUI defaults to **8** to match the LTX
 client node's default. Persisted settings still win on subsequent
 launches.
 

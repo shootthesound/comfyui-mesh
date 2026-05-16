@@ -11,7 +11,7 @@ REM  EDIT THIS: how many of the LAST transformer_blocks to load.
 REM  Must match the Icarus LTX node's `n_blocks_remote` setting.
 REM  Leave at 0 to load the full back-half model.
 REM ============================================================
-set N_BLOCKS=11
+set N_BLOCKS=8
 
 REM ============================================================
 REM  Optional primary LoRA -- leave LORA empty to skip.
