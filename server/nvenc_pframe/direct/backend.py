@@ -1,24 +1,38 @@
 """DirectBackend — drop-in replacement for CodecSession using direct ctypes.
 
-Same encode_frames / decode_frames interface as CodecSession, but the codec
-path is pure ctypes against the driver-shipped NVENC + NVDEC DLLs:
+The codec path is pure ctypes against the driver-shipped NVENC + NVDEC DLLs:
   - no PyAV subprocess
   - no PyNvVideoCodec dependency
   - no FFmpeg subprocess
 
 The encode side keeps one persistent NVENC session open across calls
-(matching CodecSession's amortised init behaviour). The decode side
-re-creates the parser per `decode_frames` call because cuvidParser doesn't
-cleanly reset between independent IDR-led streams (same constraint as
-CodecSession's PyAV path).
+(matching CodecSession's amortised init behaviour). The batch decode path
+re-creates the cuvidParser per `decode_frames` call because the parser
+doesn't cleanly reset between independent IDR-led streams; the streaming
+decode path keeps the parser alive across `decode_streaming` calls so a
+P-frame chain can be decoded one frame at a time.
 
-Limitations relative to CodecSession:
-- Currently uses NVENC's system-memory input buffer (write_input_buffer
-  copies frame bytes through host RAM). The CUDA-pointer zero-copy path
-  via nvEncRegisterResource is session-6 work; until then the host->device
-  copy is a real cost on the encode hot path.
-- The decode path also goes through host memory (cuMemcpyDtoH after
-  cuvidMapVideoFrame64). Zero-copy would map the device ptr to torch.
+Three encode entry points (pick one per call site):
+
+  - encode_frames(np.ndarray [N, 3, H, W] uint8) -> list[bytes]
+        Host-memory path; copies frames through write_input_buffer.
+        Backwards-compat for non-CUDA callers.
+
+  - encode_tensor_frames(torch.Tensor [N, 3, H, W] uint8 CUDA) -> list[bytes]
+        Zero-copy GPU path via nvEncRegisterResource. No CUDA<->host
+        round-trip on the hot path. Recommended for in-loop use.
+
+  - submit_streaming(yuv: torch.Tensor [3, H, W] uint8 CUDA) -> bytes
+        One-frame-at-a-time encode; GOP state persists across calls.
+        Pair with start_streaming() at session boundaries and
+        decode_streaming(packet) on the receiver. This is the API for
+        codec-in-loop scenarios (activation-checkpointing replacement,
+        per-step gradient compression, etc.).
+
+Lossless mode: pass `lossless=True` to the constructor to swap in
+NV_ENC_TUNING_INFO_LOSSLESS. The codec then round-trips bit-exactly at
+the YUV layer (file size ~3-5x larger than QP=18 lossy). QP is ignored
+in lossless mode.
 """
 
 from __future__ import annotations
