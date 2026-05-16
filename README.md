@@ -291,6 +291,40 @@ There are no `codec_qp` / `codec_lossless` / `codec_tile_dim` widgets
 on the LTX node — those are pinned internally at the sweet spot that
 works for LTX activations.
 
+#### ⚠️ Workflow placement — put Icarus LTX directly after the model loader
+
+The Icarus LTX node should be the **very next node after the LTX
+model loader**, before any LoraLoader or anything else that touches
+the MODEL. This is what makes the client-side VRAM strip work: the
+node strips the back-half transformer_blocks from the client model
+the first time it runs, freeing ~0.4 GB per stripped block. If
+LoraLoader (or any other MODEL-patching node) runs between the
+loader and Icarus LTX, those patches land on blocks that are about
+to be stripped, which either silently drops the patches or breaks
+the strip's accounting. Keep the chain:
+
+```
+LTX model loader → Icarus LTX → (LoraLoader, sampler, everything else)
+```
+
+#### ⚠️ Distilled LoRA — load it in the server, not in the workflow
+
+If you're using the LTX 2.3 distilled LoRA (the standalone .safetensors,
+not the pre-distilled model variant), **always load it via the
+Daedalus LTX server GUI's "Distill LoRA" row, NOT via a workflow
+LoraLoader**. The server applies it once at startup to the
+back-half blocks; the client applies the same LoRA locally to the
+front-half blocks (via whatever your normal local-LoRA path is, or
+via the model already having it baked in). Net effect: the LoRA
+covers the whole model without ever crossing the wire.
+
+The alternative — putting it in a workflow LoraLoader with
+`forward_client_loras=ON` — would ship the LoRA bytes across the
+network on every generation. For the LTX distilled LoRA specifically
+that's hundreds of MB per generation of wasted wire time. The
+server-side slot is the right home for any "always-on" LoRA you'd
+otherwise forward.
+
 ### Server side
 
 The server side ships **two** GUIs side-by-side in the same `server/`
