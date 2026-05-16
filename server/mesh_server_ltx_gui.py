@@ -271,19 +271,29 @@ def detect_gpus() -> list[str]:
 
 def detect_n_blocks_max(weights_path: Path) -> tuple[int, int] | None:
     """Open the safetensors header (no tensor data) and count
-    double_blocks.N + single_blocks.N keys. Returns (n_double, n_single)
-    or None on failure. The GUI uses (n_double + n_single) as the
-    spinbox max — n_blocks_remote is a unified counter spanning both."""
+    transformer_blocks for LTX (or double/single for FLUX as a
+    fallback so the LTX GUI doesn't choke if the user accidentally
+    picks a FLUX safetensors). Returns (n_total, 0) — LTX is a flat
+    transformer with no double/single split, so n_double_equivalent
+    is the whole count and n_single is always 0."""
     try:
         from safetensors import safe_open
     except ImportError:
         return None
     try:
         with safe_open(str(weights_path), framework="pt", device="cpu") as f:
+            # LTX layout: model.diffusion_model.transformer_blocks.{N}.*
+            tb_idx = set()
+            # FLUX layout (legacy compatibility): double_blocks.{N}.* + single_blocks.{N}.*
             db_idx = set()
             sb_idx = set()
             for k in f.keys():
-                if k.startswith("double_blocks."):
+                if k.startswith("model.diffusion_model.transformer_blocks."):
+                    try:
+                        tb_idx.add(int(k.split(".")[3]))
+                    except (ValueError, IndexError):
+                        continue
+                elif k.startswith("double_blocks."):
                     try:
                         db_idx.add(int(k.split(".")[1]))
                     except (ValueError, IndexError):
@@ -293,9 +303,11 @@ def detect_n_blocks_max(weights_path: Path) -> tuple[int, int] | None:
                         sb_idx.add(int(k.split(".")[1]))
                     except (ValueError, IndexError):
                         continue
-            if not db_idx:
-                return None
-            return (max(db_idx) + 1, (max(sb_idx) + 1) if sb_idx else 0)
+            if tb_idx:
+                return (max(tb_idx) + 1, 0)
+            if db_idx:
+                return (max(db_idx) + 1, (max(sb_idx) + 1) if sb_idx else 0)
+            return None
     except Exception:
         return None
 
@@ -484,7 +496,18 @@ class MeshServerGUI:
         self.log.configure(state=DISABLED)
 
         # Hook file-change to update n_blocks_max
-        self.weights_var.trace_add("write", lambda *_: self._refresh_after_file_change())
+        # Run the safetensors-header read off the main thread when the
+        # user picks a new file. For a fresh 28 GB checkpoint that
+        # Windows is touching for the first time (Defender scan, cold
+        # cache), the header read can block for minutes — long enough
+        # for the GUI to look frozen and for the user to think the app
+        # is hung.
+        self.weights_var.trace_add(
+            "write",
+            lambda *_: threading.Thread(
+                target=self._refresh_after_file_change, daemon=True
+            ).start(),
+        )
 
         # Watch every setting var so we can flip the Start button to
         # "Restart server to apply new settings" when the form drifts

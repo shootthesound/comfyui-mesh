@@ -208,7 +208,26 @@ def load_ltx_av(
               f"{slim_bytes/1024/1024/1024:.2f} GB "
               f"(full model on disk: ~28 GB)")
 
-        # 3. Remap fp8 quantization metadata the same way.
+        # 3a. Patch the `config` metadata so ComfyUI's LTX detector builds
+        #     a slim model with N transformer_blocks instead of the full 48.
+        #     Without this, count_blocks correctly returns our slim count
+        #     but then `dit_config.update(json.loads(metadata["config"])
+        #     .get("transformer", {}))` (see comfy/model_detection.py
+        #     around the ltxv/ltxav branch) clobbers num_layers back to 48
+        #     — the checkpoint's canonical full-model count — and ComfyUI
+        #     proceeds to construct a 48-block model, then warns about
+        #     missing weights for blocks {n_remote..47}.
+        if "config" in metadata:
+            cfg = json.loads(metadata["config"])
+            if "transformer" in cfg and cfg["transformer"].get("num_layers") != n_remote:
+                old_n = cfg["transformer"].get("num_layers")
+                cfg["transformer"]["num_layers"] = n_remote
+                metadata = dict(metadata)
+                metadata["config"] = json.dumps(cfg)
+                print(f"[server] patched config.transformer.num_layers "
+                      f"{old_n} -> {n_remote} so ComfyUI builds a slim model")
+
+        # 3b. Remap fp8 quantization metadata the same way.
         if "_quantization_metadata" in metadata:
             qm = json.loads(metadata["_quantization_metadata"])
             layers = qm.get("layers", {})
