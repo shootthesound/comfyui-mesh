@@ -492,7 +492,28 @@ def apply_server_lora(patcher, lora_path: Path, strength: float) -> int:
     slim_meta = getattr(patcher, "_mesh_slim_meta", None)
     if slim_meta is None:
         raise RuntimeError("apply_server_lora: patcher has no slim-load metadata")
-    drop_db = slim_meta["drop_db"]
+
+    # Dispatch on the slim-load variant. FLUX uses double_blocks /
+    # single_blocks and stashes drop_db; LTX(AV) uses transformer_blocks
+    # and stashes drop_first. The remap logic is the same in shape: find
+    # every key_map entry that references a slim block index, add a
+    # parallel entry pointing at original_idx = slim_idx + drop.
+    variant = slim_meta.get("variant", "flux")
+    if variant == "ltxav":
+        drop_n = slim_meta["drop_first"]
+        # LTX LoRA key shapes seen in the wild:
+        #   kohya:     transformer_blocks_{N}_<rest>
+        #   native HF: transformer_blocks.{N}.<rest>
+        block_patterns = (
+            (re.compile(r"(transformer_blocks_)(\d+)(_)"), "_"),
+            (re.compile(r"(transformer_blocks\.)(\d+)(\.)"), "."),
+        )
+    else:
+        drop_n = slim_meta["drop_db"]
+        block_patterns = (
+            (re.compile(r"(double_blocks_)(\d+)(_)"), "_"),
+            (re.compile(r"(double_blocks\.)(\d+)(\.)"), "."),
+        )
 
     print(f"[server] loading LoRA: {lora_path} (strength={strength})")
     lora_sd = comfy.utils.load_torch_file(str(lora_path), safe_load=True)
@@ -502,23 +523,20 @@ def apply_server_lora(patcher, lora_path: Path, strength: float) -> int:
     key_map = comfy.lora.model_lora_keys_unet(patcher.model, {})
 
     # Add aliases mapping ORIGINAL block indices to slim model targets.
-    # We look at every existing key_map entry, find the slim block index
-    # if any, and add a parallel entry for the original index.
-    pat_kohya = re.compile(r"(double_blocks_)(\d+)(_)")
-    pat_native = re.compile(r"(double_blocks\.)(\d+)(\.)")
     new_aliases = {}
-    if drop_db > 0:
+    if drop_n > 0:
         for lora_key, model_key in key_map.items():
-            for pat, sep in ((pat_kohya, "_"), (pat_native, ".")):
+            for pat, sep in block_patterns:
                 m = pat.search(lora_key)
                 if m:
                     slim_idx = int(m.group(2))
-                    orig_idx = slim_idx + drop_db
+                    orig_idx = slim_idx + drop_n
                     aliased = pat.sub(f"{m.group(1)}{orig_idx}{sep}", lora_key, count=1)
                     new_aliases[aliased] = model_key
                     break  # one pattern match per key
     if new_aliases:
-        print(f"[server] added {len(new_aliases)} key-map aliases (orig idx -> slim idx, drop_db={drop_db})")
+        print(f"[server] added {len(new_aliases)} key-map aliases "
+              f"(orig idx -> slim idx, variant={variant}, drop={drop_n})")
         key_map.update(new_aliases)
 
     # Run the standard ComfyUI conversion + matching pipeline
