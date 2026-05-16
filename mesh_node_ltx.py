@@ -952,6 +952,99 @@ def _split_back_half_patches(
     return len(moved)
 
 
+# ---------------------------------------------------------------------
+# LTX-specific strip + patch split. LTX has a flat transformer_blocks
+# list (no double / single distinction), so the math collapses to a
+# single split index.
+# ---------------------------------------------------------------------
+
+def _strip_diffusion_back_half_ltx(
+    diffusion: nn.Module,
+    n_blocks_remote: int,
+):
+    """LTX equivalent of _strip_diffusion_back_half. Replaces
+    transformer_blocks[total - n_blocks_remote : total] with
+    parameter-less MeshRemoteStubs, freeing their VRAM. Mutates the
+    shared nn.Module in place.
+
+    Same four-case semantics as the FLUX strip:
+      1. Fresh — strip the requested back-half range.
+      2. Same config — no-op.
+      3. Increase n_blocks_remote — extend the strip earlier.
+      4. Decrease — raise MeshDecreaseNeedsReload (weights are gone).
+    """
+    n_total = len(diffusion.transformer_blocks)
+    requested = (n_blocks_remote, n_total)
+
+    prior = getattr(diffusion, "_mesh_strip_config_ltx", None)
+    if prior is None:
+        new_range = range(n_total - n_blocks_remote, n_total)
+    else:
+        prior_n, prior_total = prior
+        if prior_total != n_total:
+            raise RuntimeError(
+                f"Model shape changed since last mesh-strip "
+                f"(was {prior_total} transformer_blocks, now {n_total}). "
+                "Reload the model before re-running with mesh."
+            )
+        if prior_n == n_blocks_remote:
+            return 0  # already stripped for this exact config
+        if prior_n > n_blocks_remote:
+            raise MeshDecreaseNeedsReload(
+                f"Decreased n_blocks_remote ({prior_n}→{n_blocks_remote}). "
+                "The stripped weights are gone for this session.\n\n"
+                "Please restart ComfyUI to reload the model from disk. "
+                "(Increasing n_blocks_remote works without restart.)"
+            )
+        # Increase — strip the NEWLY-back-half blocks (the ones not yet stubbed).
+        new_range = range(n_total - n_blocks_remote, n_total - prior_n)
+
+    stripped_count = 0
+    for i in new_range:
+        sig = _capture_block_param_signature(diffusion.transformer_blocks[i])
+        diffusion.transformer_blocks[i] = MeshRemoteStub(sig)
+        stripped_count += 1
+
+    diffusion._mesh_strip_config_ltx = requested
+
+    if stripped_count > 0:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return stripped_count
+
+
+def _split_back_half_patches_ltx(
+    patcher,
+    n_blocks_remote: int,
+    n_total_blocks: int,
+):
+    """LTX equivalent of _split_back_half_patches. Pull patches that
+    target stripped transformer_blocks (indices >= n_total - n_remote)
+    out of patcher.patches and stash them on _mesh_back_half_patches so
+    ComfyUI's patch_model doesn't try to apply them to the stubs."""
+    drop_n = n_total_blocks - n_blocks_remote
+    back: dict = getattr(patcher, "_mesh_back_half_patches", None) or {}
+    moved: list[str] = []
+    for key in list(patcher.patches.keys()):
+        # LTX checkpoints use the nested HF-style prefix
+        # `diffusion_model.transformer_blocks.{N}.*`.
+        if not key.startswith("diffusion_model.transformer_blocks."):
+            continue
+        rest = key[len("diffusion_model.transformer_blocks."):]
+        try:
+            idx = int(rest.split(".")[0])
+        except (ValueError, IndexError):
+            continue
+        if idx >= drop_n:
+            moved.append(key)
+    for k in moved:
+        back[k] = patcher.patches.pop(k)
+    patcher._mesh_back_half_patches = back
+    return len(moved)
+
+
 class MeshSplitLTX:
     """Configure FLUX double-block split between the local GPU and a
     remote mesh server. Pass-through MODEL node — slot it between the
@@ -1078,12 +1171,32 @@ class MeshSplitLTX:
                 _send_node_message(unique_id, "warn", pending_msg)
                 raise MeshServerNeedsReconfigure(pending_msg)
 
+        # Free VRAM held by back-half transformer_blocks on the client.
+        # Mutates the shared diffusion_model in place (clone() doesn't
+        # deep-copy the nn.Module). Idempotent for identical configs;
+        # raises MeshDecreaseNeedsReload if the user lowered
+        # n_blocks_remote since last run (stripped weights are gone).
+        if n_blocks_remote > 0:
+            try:
+                stripped = _strip_diffusion_back_half_ltx(diffusion, n_blocks_remote)
+            except MeshDecreaseNeedsReload as e:
+                _send_node_message(unique_id, "warn", str(e))
+                raise
+            _send_node_message(unique_id, "clear", "")
+            if stripped:
+                print(f"[mesh] LTX stripped {stripped} back-half transformer_blocks from client VRAM")
+
         # ModelPatcher copy + register the per-block overrides. Note that
         # ComfyUI uses the SAME key tuple ("double_block", i) for LTX even
         # though LTX has no double/single split — that's just an artefact
         # of ComfyUI's naming, see comfy/ldm/lightricks/av_model.py line
         # 916: `if ("double_block", i) in blocks_replace:`.
         m = model.clone()
+
+        # Move patches targeting now-stripped blocks out of m.patches so
+        # ComfyUI's patch_model doesn't try to apply them to the stubs.
+        if n_blocks_remote > 0:
+            _split_back_half_patches_ltx(m, n_blocks_remote, n_transformer_blocks)
 
         if n_blocks_remote > 0:
             replace_at_split = _make_ltx_block_replacement(
@@ -1094,8 +1207,6 @@ class MeshSplitLTX:
             m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
             for i in range(split_index + 1, n_transformer_blocks):
                 m.set_model_patch_replace(passthrough, "dit", "double_block", i)
-
-            _send_node_message(unique_id, "clear", "")
 
         print(f"[mesh] LTX offloading {n_blocks_remote}/{n_transformer_blocks} transformer_blocks "
               f"(intercept at index {split_index}); "
