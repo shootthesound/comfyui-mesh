@@ -452,12 +452,18 @@ class MeshClient:
         *,
         args: dict,                          # block_wrap args from patches_replace
         start_block: int,
+        codec_mode: str = "raw",
+        codec_qp: int = 18,
+        codec_lossless: bool = False,
+        codec_tile_dim: int = 4,
         client_lora_session: str = "",
         client_lora_blob: bytes = b"",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Send an LTX-AV `forward_ltx_blocks` request and receive the
-        post-back-half (vx, ax). All tensors raw in this iteration; codec
-        compression of vx/ax is a follow-up."""
+        post-back-half (vx, ax). Only `vx` and `ax` go through the codec
+        (large activation tensors); everything else is raw because it's
+        either small (text contexts, modulation timesteps) or already
+        cached server-side (constants session)."""
         sock = self._ensure_open()
         device = args["img"][0].device
 
@@ -476,7 +482,11 @@ class MeshClient:
         wire_tensors = []
         blobs = []
         for name, t in named_to_ship:
-            w = codec.encode_raw(name, t)
+            if name in ("vx", "ax"):
+                w = codec.encode(name, t, mode=codec_mode, qp=codec_qp,
+                                 lossless=codec_lossless, tile_dim=codec_tile_dim)
+            else:
+                w = codec.encode_raw(name, t)
             wire_tensors.append(w.to_header())
             blobs.append(w.bytes_payload)
 
@@ -668,14 +678,20 @@ def _make_ltx_block_replacement(
     split_index: int,
     n_transformer_blocks: int,
     n_remote: int,
+    codec_mode: str,
+    codec_qp: int,
+    codec_lossless: bool,
+    codec_tile_dim: int,
 ):
     """Replacement callback for LTX-AV transformer_blocks[split_index].
-    Ships the full block_wrap args payload to the server, gets back the
+    Ships the block_wrap args payload to the server, gets back the
     post-back-half (vx, ax), and returns it in the block_wrap-expected
     `{"img": (vx, ax)}` form.
 
-    No codec encoding in this iteration (raw on the wire); no client-
-    LoRA forwarding yet — both are follow-ups once correctness is proven.
+    Only vx and ax are codec-encoded — everything else is raw because
+    it's either small (text contexts, modulation timesteps) or cached
+    server-side under constants_session_id after the first call. Client-
+    LoRA forwarding is still a follow-up.
     """
     def replace_at_split(args, extras):
         for attempt in (1, 2):
@@ -683,6 +699,10 @@ def _make_ltx_block_replacement(
                 vx_back, ax_back = client.call_ltx_blocks(
                     args=args,
                     start_block=split_index,
+                    codec_mode=codec_mode,
+                    codec_qp=codec_qp,
+                    codec_lossless=codec_lossless,
+                    codec_tile_dim=codec_tile_dim,
                 )
             except MeshReconnect:
                 if attempt == 2:
@@ -1072,6 +1092,7 @@ class MeshSplitLTX:
         if n_blocks_remote > 0:
             replace_at_split = _make_ltx_block_replacement(
                 client, split_index, n_transformer_blocks, n_blocks_remote,
+                codec_mode, codec_qp, codec_lossless, codec_tile_dim,
             )
             passthrough = _make_ltx_passthrough()
             m.set_model_patch_replace(replace_at_split, "dit", "double_block", split_index)
@@ -1083,7 +1104,7 @@ class MeshSplitLTX:
         print(f"[mesh] LTX offloading {n_blocks_remote}/{n_transformer_blocks} transformer_blocks "
               f"(intercept at index {split_index}); "
               f"server={remote_host}:{remote_port}; "
-              f"wire=raw (codec layer deferred to next iteration)")
+              f"codec={codec_mode} qp={codec_qp} lossless={codec_lossless} tile_dim={codec_tile_dim}")
 
         return (m,)
 

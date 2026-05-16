@@ -638,13 +638,22 @@ def _decode_request_tensors_ltx(
     return payload, client_lora_blob
 
 
-def _encode_response_tensors_ltx(vx: torch.Tensor, ax: torch.Tensor):
-    """Encode the LTX forward response. Raw for both vx and ax in this
-    iteration — codec layering for vx/ax is a follow-up once correctness
-    is proven."""
+def _encode_response_tensors_ltx(
+    vx: torch.Tensor,
+    ax: torch.Tensor,
+    codec_mode: str = "raw",
+    codec_qp: int = 18,
+    codec_lossless: bool = False,
+    codec_tile_dim: int = 4,
+):
+    """Encode the LTX forward response. vx/ax go through whatever codec
+    the client used on the request (echoed from the incoming vx wire
+    descriptor by the caller)."""
     return [
-        codec.encode_raw("vx", vx),
-        codec.encode_raw("ax", ax),
+        codec.encode("vx", vx, mode=codec_mode, qp=codec_qp,
+                     lossless=codec_lossless, tile_dim=codec_tile_dim),
+        codec.encode("ax", ax, mode=codec_mode, qp=codec_qp,
+                     lossless=codec_lossless, tile_dim=codec_tile_dim),
     ]
 
 
@@ -754,8 +763,24 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
                     vx_out, ax_out = forward_back_half_ltx(model, payload)
                     t_forward = time.time() - t0
 
+                    # Echo the codec the client used for vx so the response
+                    # round-trips through the same codec settings. vx is
+                    # always shipped (per-timestep), so it's always present
+                    # in header["tensors"] regardless of constants_shipped.
+                    vx_in_wire = next(t for t in header["tensors"] if t["name"] == "vx")
+                    resp_codec_mode = vx_in_wire["encoding"]
+                    resp_codec_qp = 18
+                    resp_codec_lossless = bool(vx_in_wire.get("extra", {}).get("lossless", False))
+                    resp_codec_tile_dim = int(vx_in_wire.get("extra", {}).get("tile_dim", 4))
+
                     t0 = time.time()
-                    wire_outs = _encode_response_tensors_ltx(vx_out, ax_out)
+                    wire_outs = _encode_response_tensors_ltx(
+                        vx_out, ax_out,
+                        codec_mode=resp_codec_mode,
+                        codec_qp=resp_codec_qp,
+                        codec_lossless=resp_codec_lossless,
+                        codec_tile_dim=resp_codec_tile_dim,
+                    )
                     t_encode = time.time() - t0
 
                     resp_header = {
