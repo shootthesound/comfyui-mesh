@@ -418,13 +418,11 @@ comfyui-mesh/
 ## Sibling repo
 
 This rig is one expression of "use NVENC silicon as a wire codec for
-non-video state." Related public-or-internal artifacts:
+non-video state." Related public work:
 
 - **`torch-nvenc-compress`** — the original PoC. PCA + per-channel quant
   + NVENC for FLUX mid-block activations and LLM KV cache. Cross-
   architecture transfer numbers measured.
-
-
 
 ---
 
@@ -432,8 +430,8 @@ non-video state." Related public-or-internal artifacts:
 
 Author: Peter Neill — `peter@shootthesound.com`
 
-Apache-2.0 components retain their original
-license. Bundled `nvenc_pframe` is Apache-2.0.
+The bundled `nvenc_pframe` codec wrapper is Apache-2.0; its
+components retain their original license.
 
 Bug reports, feature requests, and architecture additions — open an
 issue, email me, or donate to push them up the queue. ☕
