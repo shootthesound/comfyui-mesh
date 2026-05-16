@@ -4,6 +4,7 @@
 **ComfyUI Mesh : Daedalus** *(the back-half server)*
 
 <a href="https://buymeacoffee.com/lorasandlenses"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+If this project saves you buying a new GPU please consider donating to help me support more models beyond flux and maintain.
 
 **Split a diffusion model across two GPUs — either over a gigabit
 network OR between two cards in the same machine. The activations
@@ -376,6 +377,9 @@ What more support unlocks:
   wall-clock parity with all-local
 - **Activation pre-stage cache** — skip re-shipping unchanged `pe` /
   `vec_orig` etc within a generation
+
+What it helps unlock for me:
+I'm a parent working from home mostly now with an longterm ill child whom I'm supporting and my wife is looking after with me. As much as doing this dev work is a passion and quite frankly needed distraction, the donations help keep the ligths on at the moment.  
 
 ---
 
