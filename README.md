@@ -77,7 +77,7 @@ That's it. The rest is plumbing.
   checkpoints Black Forest Labs ships today; both tested end-to-end.
   (FLUX.1 schnell is a separate architecture and is on the roadmap
   below, not in this list.)
-- **LTX 2.3 (LTX-AV 22B Dev).** The Lightricks LTX video model with
+- **LTX 2.3 (LTX-AV 22B Dev and Distilled).** The Lightricks LTX video model with
   audio+video transformer blocks. Uses a separate Icarus LTX node
   and a separate Daedalus LTX server GUI — see the LTX section below
   for the small UX differences from the FLUX pair.
@@ -163,15 +163,20 @@ Then on the back-half host, in a terminal in the `server/` folder:
    installs dependencies, runs a pre-flight check. Multi-GB,
    takes a minute or two on a fast connection. Re-runs are idempotent.
 
-2. Drop your FLUX.2 safetensors checkpoint into the same `server/`
-   folder (e.g. `flux-2-klein-9b-fp8.safetensors` or
-   `flux2_dev_fp8mixed.safetensors`). Where to get the right files:
+2. Drop your FLUX.2 or LTX 2.3 safetensors checkpoint into the same
+   `server/` folder (e.g. `flux-2-klein-9b-fp8.safetensors`,
+   `flux2_dev_fp8mixed.safetensors`, or `ltx-2.3-22b-dev-fp8.safetensors`).
+   Where to get the right files:
    - **FLUX.2 Dev:** the ComfyUI docs page
      [Flux.2 Dev](https://docs.comfy.org/tutorials/flux/flux-2-dev)
      has direct links (the fp8 variants are what fit comfortably on
      consumer cards).
    - **FLUX.2 Klein 9B:** Black Forest Labs' HuggingFace repo at
      [black-forest-labs/FLUX.2-klein-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/tree/main).
+   - **LTX 2.3 (LTX-AV 22B Dev and Distilled):** Lightricks' HuggingFace
+     repo at [Lightricks/LTX-2.3-fp8](https://huggingface.co/Lightricks/LTX-2.3-fp8/tree/main).
+     Repo contains both the base model and a pre-distilled variant —
+     pick whichever fits your workflow.
 
 3. Launch via the GUI (recommended for first run):
    ```
