@@ -411,11 +411,228 @@ def decode_nvenc(wire: dict, payload: bytes, device: torch.device) -> torch.Tens
     return flat.reshape(tuple(wire["shape"])).to(dtype=target_dtype)
 
 
+def encode_nvenc_clipsparse(
+    name: str, tensor: torch.Tensor,
+    qp: int = 18, tile_dim: int = 4, outlier_pct: float = 0.5,
+) -> WireTensor:
+    """Per-channel percentile-clip quant + NVENC HEVC + sparse outlier correction.
+
+    Same NVENC pipeline as `encode_nvenc` (single encode pass, same per-frame
+    latency) but with two changes:
+      1. Per-channel quant range is `[p_lo, p_hi]` where
+         `p_lo = quantile(outlier_pct%)` and `p_hi = quantile(100-outlier_pct%)`.
+         Heavy-tailed channels (the LTX contrast-crush culprit) no longer let
+         a few extreme values widen the range and squash everyone else into
+         a handful of uint8 bins.
+      2. Values outside `[p_lo, p_hi]` get clipped to 0/255 by the quant
+         step but are also captured separately as `(channel, position, exact
+         float16 value)` triples. The decoder scatter-overwrites them after
+         dequant, so outliers come back exactly.
+
+    Default `outlier_pct=0.5` clips 0.5% of each tail → 1% outliers total.
+    For a 50 MB activation tensor that's ~500K outliers × 10 bytes ≈ 5 MB
+    of sparse correction on top of the ~5 MB nvenc bitstream — still ~5×
+    smaller than raw, with much better within-channel precision than plain
+    nvenc on heavy-tailed distributions.
+
+    Added for the LTX path. FLUX paths never select this mode.
+    """
+    import struct as _struct
+
+    if tile_dim < 1:
+        raise ValueError(f"tile_dim must be >= 1, got {tile_dim}")
+    if not (0.0 < outlier_pct < 50.0):
+        raise ValueError(f"outlier_pct must be in (0, 50), got {outlier_pct}")
+
+    orig_shape = tuple(tensor.shape)
+    orig_dtype = tensor.dtype
+    flat = tensor.detach().contiguous().reshape(-1, orig_shape[-1])
+    n_tokens, n_channels = flat.shape
+
+    h_data, w_data = _pick_2d_layout(n_tokens)
+    pad = h_data * w_data - n_tokens
+    if pad > 0:
+        flat = torch.cat([flat, flat[:1].expand(pad, -1)], dim=0)
+
+    arr = flat.reshape(h_data, w_data, n_channels).permute(2, 0, 1).contiguous()  # [C, H, W]
+    arr_f32 = arr.to(torch.float32)
+
+    # Per-channel percentile clip points. torch.quantile works on the last dim
+    # by default; we want per-channel so reshape to [C, H*W] first.
+    flat_per_c = arr_f32.reshape(n_channels, -1)
+    pct_lo = float(outlier_pct) / 100.0
+    pct_hi = 1.0 - pct_lo
+    p_lo = torch.quantile(flat_per_c, q=pct_lo, dim=1)  # [C]
+    p_hi = torch.quantile(flat_per_c, q=pct_hi, dim=1)  # [C]
+
+    ranges = (p_hi - p_lo).clamp(min=1e-12)
+    scale = (255.0 / ranges).view(-1, 1, 1)
+    mn_b = p_lo.view(-1, 1, 1)
+    hi_b = p_hi.view(-1, 1, 1)
+    u8 = ((arr_f32 - mn_b) * scale).clamp(0, 255).to(torch.uint8)
+    # Constant-valued channels (range ~ 0) → 128; dequant lands back at mean.
+    const_mask = (p_hi - p_lo) < 1e-12
+    if const_mask.any():
+        u8[const_mask] = 128
+
+    # Find outliers (positions clipped by the percentile cap).
+    outlier_mask = (arr_f32 < mn_b) | (arr_f32 > hi_b)  # [C, H, W] bool
+    if const_mask.any():
+        outlier_mask[const_mask] = False  # constant channels have nothing to correct
+    outlier_idx = outlier_mask.nonzero(as_tuple=False)  # [N, 3] (c, h, w) int64
+    n_outliers = int(outlier_idx.shape[0])
+    if n_outliers > 0:
+        ch_idx = outlier_idx[:, 0].to(torch.int32).contiguous().cpu().numpy()
+        pos_idx = (outlier_idx[:, 1] * w_data + outlier_idx[:, 2]).to(torch.int32).contiguous().cpu().numpy()
+        outlier_vals_f16 = arr_f32[outlier_mask].to(torch.float16).contiguous().cpu().numpy()
+        # Pack: [chans:int32 * N][positions:int32 * N][values:float16 * N]
+        sparse_bytes = (
+            ch_idx.tobytes() + pos_idx.tobytes() + outlier_vals_f16.tobytes()
+        )
+    else:
+        sparse_bytes = b""
+
+    var_mins = p_lo.tolist()
+    var_maxs = p_hi.tolist()
+
+    # ----- Channel tiling + NVENC encode (identical to encode_nvenc) -----
+    chans_per_plane = tile_dim * tile_dim
+    chans_per_frame = 3 * chans_per_plane
+    n_codec_frames = (n_channels + chans_per_frame - 1) // chans_per_frame
+    target_channels = n_codec_frames * chans_per_frame
+    pad_channels = target_channels - n_channels
+    if pad_channels > 0:
+        u8_padded = torch.cat(
+            [u8, u8[-1:].expand(pad_channels, h_data, w_data)],
+            dim=0,
+        )
+    else:
+        u8_padded = u8
+
+    tiled = u8_padded.reshape(
+        n_codec_frames, 3, tile_dim, tile_dim, h_data, w_data
+    ).permute(0, 1, 2, 4, 3, 5).contiguous()
+    tile_h = tile_dim * h_data
+    tile_w = tile_dim * w_data
+    yuv_data = tiled.reshape(n_codec_frames, 3, tile_h, tile_w)
+    h_padded = _align_up(tile_h)
+    w_padded = _align_up(tile_w)
+    if h_padded == tile_h and w_padded == tile_w:
+        yuv = yuv_data
+    else:
+        yuv = torch.zeros(
+            (n_codec_frames, 3, h_padded, w_padded),
+            dtype=torch.uint8, device=tensor.device,
+        )
+        yuv[:, :, :tile_h, :tile_w] = yuv_data
+
+    backend = _get_or_create_backend(h_padded, w_padded, qp=qp, lossless=False)
+    codec_bytes = b"".join(backend.encode_tensor_frames(yuv))
+
+    # Wire layout: [u32 n_outliers][u32 codec_size][sparse_bytes][codec_bytes]
+    header = _struct.pack(">II", n_outliers, len(codec_bytes))
+    payload = header + sparse_bytes + codec_bytes
+
+    return WireTensor(
+        name=name,
+        encoding="nvenc_clipsparse",
+        bytes_payload=payload,
+        dtype_str=str(orig_dtype),
+        shape=orig_shape,
+        n_codec_frames=n_codec_frames,
+        h_padded=h_padded,
+        w_padded=w_padded,
+        h_data=h_data,
+        w_data=w_data,
+        n_channels=n_channels,
+        tile_dim=tile_dim,
+        var_mins=var_mins,
+        var_maxs=var_maxs,
+    )
+
+
+def decode_nvenc_clipsparse(wire: dict, payload: bytes, device: torch.device) -> torch.Tensor:
+    """Inverse of encode_nvenc_clipsparse. NVDEC + per-channel dequant
+    + scatter-overwrite the sparse outliers exactly."""
+    import struct as _struct
+
+    extra = wire["extra"]
+    n_frames = int(extra["n_codec_frames"])
+    h_padded = int(extra["h_padded"])
+    w_padded = int(extra["w_padded"])
+    h_data = int(extra["h_data"])
+    w_data = int(extra["w_data"])
+    n_channels = int(extra["n_channels"])
+    tile_dim = int(extra.get("tile_dim", 1))
+    var_mins = extra.get("var_mins", [])
+    var_maxs = extra.get("var_maxs", [])
+    if not var_mins or not var_maxs or len(var_mins) != n_channels:
+        raise ValueError(
+            f"decode_nvenc_clipsparse: per-channel quant tables missing "
+            f"({len(var_mins) if var_mins else 0} vs n_channels {n_channels})"
+        )
+    if tile_dim < 1:
+        raise ValueError(f"tile_dim must be >= 1, got {tile_dim}")
+
+    # Split wire payload
+    n_outliers, codec_size = _struct.unpack(">II", payload[:8])
+    sparse_total = 4 * n_outliers + 4 * n_outliers + 2 * n_outliers  # chans + positions + values
+    sparse_bytes = payload[8 : 8 + sparse_total]
+    codec_bytes = bytes(payload[8 + sparse_total : 8 + sparse_total + codec_size])
+
+    # ----- NVDEC + untile (identical to decode_nvenc) -----
+    backend = _get_decode_backend(h_padded, w_padded)
+    decoded_t = backend.decode_frames_cuda([codec_bytes], n_frames)
+    yuv = decoded_t.to(device=device)
+
+    tile_h = tile_dim * h_data
+    tile_w = tile_dim * w_data
+    yuv_cropped = yuv[:, :, :tile_h, :tile_w]
+    untiled = yuv_cropped.reshape(
+        n_frames, 3, tile_dim, h_data, tile_dim, w_data
+    ).permute(0, 1, 2, 4, 3, 5).contiguous()
+    flat = untiled.reshape(n_frames * 3 * tile_dim * tile_dim, h_data, w_data)
+    out_channels = flat[:n_channels].contiguous()  # [C, H, W] uint8
+
+    # Per-channel dequant using p_lo / p_hi as the quant range.
+    mins_t = torch.tensor(var_mins, dtype=torch.float32, device=device).view(-1, 1, 1)
+    maxs_t = torch.tensor(var_maxs, dtype=torch.float32, device=device).view(-1, 1, 1)
+    ranges = (maxs_t - mins_t).clamp(min=1e-12)
+    inv_scale = ranges / 255.0
+    f = out_channels.to(torch.float32) * inv_scale + mins_t  # [C, H, W] float32
+
+    # Scatter-overwrite outliers with their exact float16 values.
+    if n_outliers > 0:
+        sz_int = 4 * n_outliers
+        sz_val = 2 * n_outliers
+        chans = np.frombuffer(sparse_bytes[:sz_int], dtype=np.int32).copy()
+        positions = np.frombuffer(sparse_bytes[sz_int : 2 * sz_int], dtype=np.int32).copy()
+        values_f16 = np.frombuffer(sparse_bytes[2 * sz_int : 2 * sz_int + sz_val], dtype=np.float16).copy()
+        chans_t = torch.from_numpy(chans).to(device=device, dtype=torch.long)
+        positions_t = torch.from_numpy(positions).to(device=device, dtype=torch.long)
+        values_t = torch.from_numpy(values_f16).to(device=device, dtype=torch.float32)
+        # Decompose flat positions into (h, w)
+        h_idx = positions_t // w_data
+        w_idx = positions_t % w_data
+        f[chans_t, h_idx, w_idx] = values_t
+
+    # Reshape back to original tensor shape.
+    flat = f.permute(1, 2, 0).reshape(h_data * w_data, n_channels)
+    n_tokens = 1
+    for d in wire["shape"][:-1]:
+        n_tokens *= int(d)
+    flat = flat[:n_tokens]
+    target_dtype = _torch_dtype_from_str(wire["dtype"])
+    return flat.reshape(tuple(wire["shape"])).to(dtype=target_dtype)
+
+
 def encode(name: str, tensor: torch.Tensor, mode: str, qp: int = 18, lossless: bool = False, tile_dim: int = 4) -> WireTensor:
     if mode == "raw":
         return encode_raw(name, tensor)
     elif mode == "nvenc":
         return encode_nvenc(name, tensor, qp=qp, lossless=lossless, tile_dim=tile_dim)
+    elif mode == "nvenc_clipsparse":
+        return encode_nvenc_clipsparse(name, tensor, qp=qp, tile_dim=tile_dim)
     else:
         raise ValueError(f"unknown codec mode {mode!r}")
 
@@ -426,5 +643,7 @@ def decode(wire: dict, payload: bytes, device: torch.device) -> torch.Tensor:
         return decode_raw(wire, payload, device)
     elif enc == "nvenc":
         return decode_nvenc(wire, payload, device)
+    elif enc == "nvenc_clipsparse":
+        return decode_nvenc_clipsparse(wire, payload, device)
     else:
         raise ValueError(f"unknown wire encoding {enc!r}")
