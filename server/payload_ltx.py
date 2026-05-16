@@ -158,7 +158,13 @@ def compute_constants_session_id(
                 min(n // 3, n - 1),
                 min((2 * n) // 5, n - 1),
             })
-            sample = flat[positions].contiguous().cpu().numpy().tobytes()
+            # Cast to float32 before .numpy() — numpy lacks a native
+            # bfloat16 dtype (PyTorch's text-context and PE tensors are
+            # bf16). Lossless for fingerprinting since float32 has
+            # strictly more precision than bf16; we're hashing bits, not
+            # values, so any bit-distinct bf16 samples remain
+            # bit-distinct after the cast.
+            sample = flat[positions].to(torch.float32).contiguous().cpu().numpy().tobytes()
             h.update(sample)
     # Constant-relevant meta: pe_split_mode (per-key bool), flags
     # (transformer_options run_vx etc), and the subset of none_keys that
