@@ -170,6 +170,7 @@ between the two ends is the most likely silent-correctness bug.
 
 ```
 flux-2-klein-9b-fp8.safetensors   ← 9.4 GB and/or flux2_dev_fp8mixed.safetensors
+ltx-2.3-22b-dev-fp8.safetensors   ← if you're running LTX 2.3
 ```
 
 Where to get the right files:
@@ -180,6 +181,10 @@ Where to get the right files:
   cards).
 - **FLUX.2 Klein 9B:** Black Forest Labs' HuggingFace repo at
   [black-forest-labs/FLUX.2-klein-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/tree/main).
+- **LTX 2.3 (LTX-AV 22B Dev):** Lightricks' HuggingFace repo at
+  [Lightricks/LTX-2.3-fp8](https://huggingface.co/Lightricks/LTX-2.3-fp8/tree/main).
+  Grab the base model + the distilled LoRA (which slots into the
+  Distill LoRA row in the LTX server GUI).
 
 Or point the launcher at wherever you keep your checkpoints.
 
