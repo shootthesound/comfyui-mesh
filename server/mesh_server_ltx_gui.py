@@ -465,6 +465,31 @@ class MeshServerGUI:
         _Label(row, text="(only applies to layers this server holds — front-half + tail singles ignored)",
               fg=THEME["fg_dim"], anchor="w").pack(side=LEFT, padx=8)
 
+        # Row: second optional LoRA file picker + strength (intended for
+        # the LTX 2.3 Distilled LoRA, which most users will pair with the
+        # base model. Default strength 0.5 matches the workflow's typical
+        # value. Two slots is the right UX because the distill LoRA is
+        # nearly always wanted alongside whatever style/character LoRA the
+        # user picks in the first slot.
+        row = _Frame(self.root)
+        row.pack(fill=X, **pad)
+        _Label(row, text="Distill LoRA:", width=12, anchor="w").pack(side=LEFT)
+        self.lora2_var = StringVar(value=s.get("lora2", ""))
+        _Entry(row, textvariable=self.lora2_var).pack(side=LEFT, fill=X, expand=True, padx=4)
+        _Button(row, text="Browse…", command=self._on_browse_lora2).pack(side=LEFT)
+        _Button(row, text="Clear", command=lambda: self.lora2_var.set("")).pack(side=LEFT, padx=4)
+
+        row = _Frame(self.root)
+        row.pack(fill=X, **pad)
+        _Label(row, text="Distill strength:", width=12, anchor="w").pack(side=LEFT)
+        self.lora2_strength_var = StringVar(value=s.get("lora2_strength", "0.5"))
+        ttk.Spinbox(
+            row, from_=-2.0, to=2.0, increment=0.1,
+            textvariable=self.lora2_strength_var, width=8,
+        ).pack(side=LEFT)
+        _Label(row, text="(LTX 2.3 distilled LoRA — 0.5 is the typical strength)",
+              fg=THEME["fg_dim"], anchor="w").pack(side=LEFT, padx=8)
+
         # Row: start/stop + status
         row = _Frame(self.root)
         row.pack(fill=X, padx=8, pady=10)
@@ -515,6 +540,7 @@ class MeshServerGUI:
         for var in (
             self.weights_var, self.n_blocks_var, self.port_var, self.bind_var,
             self.device_var, self.dtype_var, self.lora_var, self.lora_strength_var,
+            self.lora2_var, self.lora2_strength_var,
         ):
             var.trace_add("write", lambda *_: self._update_start_button_state())
 
@@ -546,6 +572,8 @@ class MeshServerGUI:
             "dtype": self.dtype_var.get(),
             "lora": self.lora_var.get().strip(),
             "lora_strength": self.lora_strength_var.get().strip(),
+            "lora2": self.lora2_var.get().strip(),
+            "lora2_strength": self.lora2_strength_var.get().strip(),
         }
 
     def _persist_settings(self) -> None:
@@ -658,6 +686,22 @@ class MeshServerGUI:
         if path:
             self.lora_var.set(path)
 
+    def _on_browse_lora2(self):
+        # Same local-paths-only logic as _on_browse_lora.
+        lora_dirs = [
+            HERE / "loras",
+            HERE / "ComfyUI" / "models" / "loras",
+            HERE,
+        ]
+        initial = next((str(p) for p in lora_dirs if p.is_dir()), str(HERE))
+        path = filedialog.askopenfilename(
+            title="Pick the LTX distilled LoRA (optional — Cancel to skip)",
+            initialdir=initial,
+            filetypes=[("Safetensors", "*.safetensors"), ("All files", "*.*")],
+        )
+        if path:
+            self.lora2_var.set(path)
+
     def _refresh_after_file_change(self):
         path = self.weights_var.get().strip()
         if not path or not Path(path).is_file():
@@ -736,6 +780,19 @@ class MeshServerGUI:
                 messagebox.showerror("comfyui-mesh", "LoRA strength must be a number.")
                 return
             cmd += ["--lora", lora_path, "--lora-strength", str(lora_strength)]
+
+        # Optional second LoRA + strength (intended for the LTX distilled LoRA)
+        lora2_path = self.lora2_var.get().strip()
+        if lora2_path:
+            if not Path(lora2_path).is_file():
+                messagebox.showerror("comfyui-mesh", f"Distill LoRA file not found:\n{lora2_path}")
+                return
+            try:
+                lora2_strength = float(self.lora2_strength_var.get())
+            except ValueError:
+                messagebox.showerror("comfyui-mesh", "Distill LoRA strength must be a number.")
+                return
+            cmd += ["--lora2", lora2_path, "--lora2-strength", str(lora2_strength)]
 
         # Persist settings on a successful launch attempt so next open
         # restores the same configuration.

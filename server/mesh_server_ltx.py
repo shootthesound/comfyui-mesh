@@ -658,11 +658,19 @@ def _encode_response_tensors_ltx(
 
 
 def serve_ltx(patcher, host: str, port: int, device: torch.device,
-              server_lora_path: Path = None, server_lora_strength: float = 1.0):
+              server_lora_path: Path = None, server_lora_strength: float = 1.0,
+              server_lora2_path: Path = None, server_lora2_strength: float = 0.5):
     """LTX-AV TCP loop. Mirrors the FLUX `serve()` shape but dispatches
     on `forward_ltx_blocks` and uses the LTX block forward signature.
     Reuses the FLUX hello / reconfigure messages — they're protocol-
-    level and don't care about the variant."""
+    level and don't care about the variant.
+
+    Two server-side LoRA slots: the primary `--lora` (typical style /
+    character LoRA) and the secondary `--lora2` (typically the LTX
+    distilled LoRA). Both get re-applied after any client-LoRA unpatch
+    so a forwarding client doesn't accidentally drop the server's
+    static LoRAs.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host, port))
@@ -749,6 +757,8 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
                         _unapply_client_lora(patcher)
                         if server_lora_path is not None:
                             apply_server_lora(patcher, server_lora_path, server_lora_strength)
+                        if server_lora2_path is not None:
+                            apply_server_lora(patcher, server_lora2_path, server_lora2_strength)
                         if incoming_session != "empty" and client_lora_blob:
                             _apply_client_lora(patcher, client_lora_blob, incoming_session, device)
                         current_client_lora_session = incoming_session
@@ -757,6 +767,8 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
                         _unapply_client_lora(patcher)
                         if server_lora_path is not None:
                             apply_server_lora(patcher, server_lora_path, server_lora_strength)
+                        if server_lora2_path is not None:
+                            apply_server_lora(patcher, server_lora2_path, server_lora2_strength)
                         current_client_lora_session = None
 
                     t0 = time.time()
@@ -1203,6 +1215,14 @@ def main():
                         "silently dropped via ComfyUI's standard pipeline.")
     p.add_argument("--lora-strength", type=float, default=1.0,
                    help="LoRA strength multiplier (default 1.0).")
+    p.add_argument("--lora2", type=Path, default=None,
+                   help="Path to a SECOND LoRA safetensors file (intended for "
+                        "the LTX 2.3 distilled LoRA). Applied after --lora; "
+                        "both stack additively via ComfyUI's standard patch "
+                        "pipeline.")
+    p.add_argument("--lora2-strength", type=float, default=0.5,
+                   help="Second LoRA strength multiplier (default 0.5, the "
+                        "typical strength for the LTX distilled LoRA).")
     args = p.parse_args()
 
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
@@ -1220,11 +1240,17 @@ def main():
         if not args.lora.is_file():
             raise FileNotFoundError(f"LoRA file not found: {args.lora}")
         apply_server_lora(patcher, args.lora, args.lora_strength)
+    if args.lora2 is not None:
+        if not args.lora2.is_file():
+            raise FileNotFoundError(f"Distill LoRA file not found: {args.lora2}")
+        apply_server_lora(patcher, args.lora2, args.lora2_strength)
 
     serve_ltx(
         patcher, args.bind, args.port, device,
         server_lora_path=args.lora,
         server_lora_strength=args.lora_strength,
+        server_lora2_path=args.lora2,
+        server_lora2_strength=args.lora2_strength,
     )
 
 
