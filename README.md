@@ -210,23 +210,36 @@ Set on the `Icarus` node:
 Queue a generation. Server log shows one `[server] forward …` line
 per timestep, with byte counts. Done.
 
-#### Tip: FLUX.2 Dev + the FLUX.2 turbo LoRA
+#### ⚠️ Important: FLUX.2 Dev + the FLUX.2 turbo LoRA — load it on BOTH sides, NOT via forwarding
 
-If you're running FLUX.2 Dev with the FLUX.2 turbo LoRA (the
+If you're running FLUX.2 Dev with the **FLUX.2 turbo LoRA** (the
 distillation LoRA that lets you sample in 4 steps instead of the
-default ~30), the cleanest setup is a **two-sided load**:
+default ~30), do NOT let Icarus forward it across the wire. The
+turbo LoRA is **~2.5 GB** — much bigger than typical character /
+style LoRAs. Forwarding it pushes the laptop / smaller GPU server
+into a memory-pressure regime that **adds seconds per timestep** to
+the codec encode time, completely killing the speed-up the rig is
+supposed to give you.
 
-1. Load the turbo LoRA on the **server** via Daedalus's GUI LoRA
-   picker → applies to the back-half blocks server-side.
-2. Place a `LoraLoader` for the same turbo LoRA in the workflow
-   to the **RIGHT of the Icarus node** (i.e. between Icarus and
-   KSampler) → applies to the front-half blocks locally.
+The right setup is a **two-sided load** that never ships the LoRA
+across the wire:
 
-This covers the whole model with the turbo LoRA without paying to
-ship it across the wire on every workflow change. The "after Icarus"
-position is the trick that makes it work — `forward_client_loras`
-deliberately doesn't capture post-Icarus patches (so they stay
-local-only), and the server already has its copy from step 1.
+1. **On the server:** load the turbo LoRA via Daedalus's GUI LoRA
+   picker. Applies to the back-half blocks server-side.
+2. **On the client:** place a `LoraLoader` for the same turbo LoRA
+   in the workflow **to the RIGHT of the Icarus node** (i.e.
+   between Icarus and KSampler). Applies to the front-half blocks
+   locally.
+
+The "after Icarus" position is the trick — `forward_client_loras`
+deliberately does NOT capture post-Icarus patches (so they stay
+local-only), and the server already has its copy from step 1. Net
+result: the whole model gets the LoRA, but the wire never carries
+it.
+
+This applies to any large LoRA (>~500 MB), not just turbo. For
+small character / style LoRAs the normal "LoraLoader BEFORE Icarus
++ `forward_client_loras=ON`" pattern is fine and convenient.
 
 ---
 
