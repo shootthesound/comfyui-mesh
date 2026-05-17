@@ -247,7 +247,10 @@ def main():
     try:
         payload = build_synthetic_payload(diffusion, device, dtype)
     except Exception as e:
-        print(f"[smoke] FAIL: could not build payload: {e}", file=sys.stderr)
+        print(f"[smoke] FAIL: could not build payload: {type(e).__name__}: {e}",
+              file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         sys.exit(4)
 
     vx_in, ax_in = payload["img"]
