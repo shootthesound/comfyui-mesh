@@ -713,6 +713,22 @@ def serve_ltx(patcher, host: str, port: int, device: torch.device,
 
                 elif kind == "reconfigure":
                     new_n_blocks = int(header.get("n_blocks", n_loaded))
+                    # No-op guard: if the requested value matches what's
+                    # already loaded, ack and stay alive instead of
+                    # triggering a full server restart. Catches the case
+                    # where the user re-confirms an unchanged value in
+                    # the GUI, or where the client's bookkeeping has
+                    # drifted but the server is actually correct.
+                    if new_n_blocks == n_loaded:
+                        print(f"[server] reconfigure no-op: --n-blocks "
+                              f"already {n_loaded}, staying alive")
+                        protocol.send_message(conn, {
+                            "kind": "reconfigure_ack",
+                            "tensors": [],
+                            "new_n_blocks": new_n_blocks,
+                            "no_op": True,
+                        }, [])
+                        continue
                     print(f"[server] RESTARTING: reconfigure request "
                           f"--n-blocks {n_loaded} -> {new_n_blocks}")
                     if new_n_blocks < n_loaded:
@@ -1192,6 +1208,61 @@ def serve(patcher, host: str, port: int, device: torch.device,
                 pass
 
 
+def _wait_for_vram(device: torch.device,
+                   max_wait_seconds: float = 60.0,
+                   poll_interval: float = 2.0) -> None:
+    """Wait for VRAM on `device` to be reasonably free before loading.
+
+    Addresses the common Linux-after-crash pattern: a previous server
+    process crashed, leaving the CUDA context's allocations stranded
+    in VRAM (driver hasn't reclaimed them yet). Without this probe,
+    the next load_ltx_av() crashes mid-load with an OOM stack trace,
+    the user manually retries, and the second attempt works because
+    by then the kernel has cleaned up. With this probe, the server
+    surfaces a clear "waiting..." message and proceeds once VRAM is
+    ready (or after max_wait_seconds, in case the user really did
+    have something else legitimately holding it).
+    """
+    if device.type != "cuda":
+        return
+    try:
+        _free, total_bytes = torch.cuda.mem_get_info(device)
+    except Exception:
+        return
+    # Heuristic: require at least 30% of the card's VRAM free OR 4 GB,
+    # whichever is larger. Catches "nearly all VRAM is allocated" cleanly
+    # without needing to know the exact model size up front.
+    required_bytes = max(int(4 * 1024**3), int(0.30 * total_bytes))
+    total_gb = total_bytes / 1024**3
+    required_gb = required_bytes / 1024**3
+    deadline = time.time() + max_wait_seconds
+    waited = False
+    while True:
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info(device)
+        except Exception:
+            return
+        free_gb = free_bytes / 1024**3
+        if free_bytes >= required_bytes:
+            if waited:
+                print(f"[server] VRAM ready: {free_gb:.1f} / {total_gb:.1f} GB "
+                      f"free on {device}, proceeding with model load")
+            return
+        if time.time() >= deadline:
+            print(f"[server] *** WARNING *** still only {free_gb:.1f} GB free "
+                  f"on {device} after {max_wait_seconds:.0f}s wait "
+                  f"(need ~{required_gb:.1f} GB); proceeding anyway — the "
+                  f"load may OOM if a previous crash left orphaned VRAM")
+            return
+        if not waited:
+            print(f"[server] only {free_gb:.1f} / {total_gb:.1f} GB free on "
+                  f"{device} — need ~{required_gb:.1f} GB. Waiting (a previous "
+                  f"server crash may have left orphaned VRAM that the driver "
+                  f"hasn't reclaimed yet)...")
+            waited = True
+        time.sleep(poll_interval)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--weights", type=Path, required=True,
@@ -1235,6 +1306,7 @@ def main():
     print("validated against a single-GPU baseline.")
     print("=" * 64)
 
+    _wait_for_vram(device)
     patcher = load_ltx_av(args.weights, device, dtype, n_blocks=args.n_blocks)
     if args.lora is not None:
         if not args.lora.is_file():
