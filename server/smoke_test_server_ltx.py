@@ -70,11 +70,30 @@ import payload_ltx  # noqa: E402
 
 def build_synthetic_payload(diffusion, device, dtype):
     """Build a block_wrap-shaped payload sized to what LTXAVModel
-    would feed each transformer_block at typical resolution."""
+    would feed each transformer_block at typical resolution.
+
+    Reads the actual block 0's scale_shift_table shapes to size the
+    CompressedTimestep tensors correctly. Hardcoding ada_params=6 or 9
+    is wrong because cross_attention_adaln varies; the only honest way
+    to get the right shape is to ask the loaded block.
+    """
     # Read shapes from the loaded model so we match its dims exactly.
     H_v = diffusion.inner_dim
     H_a = getattr(diffusion, "audio_inner_dim", H_v)
     n_attn_heads = diffusion.num_attention_heads
+
+    # Inspect block 0 to learn the actual ada-param counts. The
+    # CompressedTimestep .data tensor must be reshapeable as
+    # (B, T, num_ada_params, dim_per_param), so its feature_dim =
+    # num_ada_params * dim_per_param.
+    block0 = diffusion.transformer_blocks[0]
+    n_ada_v, v_dim = block0.scale_shift_table.shape
+    n_ada_a, a_dim = block0.audio_scale_shift_table.shape
+    # av_ca tables are (5, v_dim) / (5, a_dim) — first 4 rows are
+    # scale_shift, last row is the gate. So scale_shift_timestep
+    # feature_dim = 4 * v_dim, gate_timestep feature_dim = 1 * v_dim
+    # (per get_av_ca_ada_values' num_scale_shift_values=4 default).
+    n_ca_ss, n_ca_gate = 4, 1
 
     # Plausible token counts. A modest size for fast forward.
     B = 1
@@ -89,21 +108,22 @@ def build_synthetic_payload(diffusion, device, dtype):
     pe_per_token_v = H_v // n_attn_heads // 2
     pe_per_token_a = H_a // n_attn_heads // 2
 
-    vx = torch.randn(B, T_v, H_v, dtype=dtype, device=device) * 0.3
-    ax = torch.randn(B, T_a, H_a, dtype=dtype, device=device) * 0.3
-    v_context = torch.randn(B, C_v, H_v, dtype=dtype, device=device) * 0.1
-    a_context = torch.randn(B, C_a, H_a, dtype=dtype, device=device) * 0.1
+    vx = torch.randn(B, T_v, v_dim, dtype=dtype, device=device) * 0.3
+    ax = torch.randn(B, T_a, a_dim, dtype=dtype, device=device) * 0.3
+    v_context = torch.randn(B, C_v, v_dim, dtype=dtype, device=device) * 0.1
+    a_context = torch.randn(B, C_a, a_dim, dtype=dtype, device=device) * 0.1
 
     # Build a real CompressedTimestep object for the *_timestep slots
     # using the same object.__new__ pattern reconstruct_payload uses.
     from comfy.ldm.lightricks.av_model import CompressedTimestep
 
-    def make_ts(B, T, D):
+    def make_ts(B, T, n_ada, dim):
+        feature_dim = n_ada * dim
         obj = object.__new__(CompressedTimestep)
-        obj.data = torch.randn(B, T, D, dtype=dtype, device=device) * 0.01
+        obj.data = torch.randn(B, T, feature_dim, dtype=dtype, device=device) * 0.01
         obj.batch_size = B
         obj.num_frames = T
-        obj.feature_dim = D
+        obj.feature_dim = feature_dim
         obj.patches_per_frame = 1
         return obj
 
@@ -132,12 +152,12 @@ def build_synthetic_payload(diffusion, device, dtype):
             torch.randn(B, n_attn_heads, C_a, pe_per_token_a, dtype=dtype, device=device),
             True,
         ),
-        "v_timestep": make_ts(B, T_v, 6 * H_v),
-        "a_timestep": make_ts(B, T_a, 6 * H_a),
-        "v_cross_scale_shift_timestep": make_ts(B, T_v, 4 * H_v),
-        "a_cross_scale_shift_timestep": make_ts(B, T_a, 4 * H_a),
-        "v_cross_gate_timestep": make_ts(B, T_v, H_v),
-        "a_cross_gate_timestep": make_ts(B, T_a, H_a),
+        "v_timestep": make_ts(B, T_v, n_ada_v, v_dim),
+        "a_timestep": make_ts(B, T_a, n_ada_a, a_dim),
+        "v_cross_scale_shift_timestep": make_ts(B, T_v, n_ca_ss, v_dim),
+        "a_cross_scale_shift_timestep": make_ts(B, T_a, n_ca_ss, a_dim),
+        "v_cross_gate_timestep": make_ts(B, T_v, n_ca_gate, v_dim),
+        "a_cross_gate_timestep": make_ts(B, T_a, n_ca_gate, a_dim),
         "v_prompt_timestep": None,
         "a_prompt_timestep": None,
         "self_attention_mask": None,
