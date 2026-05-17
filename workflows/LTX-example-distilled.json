@@ -55,12 +55,12 @@
       "id": 267,
       "type": "b94257db-cdc1-45d3-8913-ca61e782d9c1",
       "pos": [
-        -652.9709986246293,
-        3539.246060182831
+        -568.4705076285587,
+        3567.6929320877903
       ],
       "size": [
-        626.9393362824915,
-        537.8556189395972
+        548.8997966930353,
+        482.0420798831433
       ],
       "flags": {},
       "order": 0,
@@ -90,15 +90,6 @@
           "type": "INT",
           "widget": {
             "name": "value_4"
-          },
-          "link": null
-        },
-        {
-          "label": "distilled_lora",
-          "name": "lora_name",
-          "type": "COMBO",
-          "widget": {
-            "name": "lora_name"
           },
           "link": null
         },
@@ -151,10 +142,6 @@
           [
             "236",
             "ckpt_name"
-          ],
-          [
-            "232",
-            "lora_name"
           ],
           [
             "243",
@@ -230,10 +217,10 @@
         "inputNode": {
           "id": -10,
           "bounding": [
-            720,
-            4240,
+            571.3762575218193,
+            4371.138583430093,
             170.162109375,
-            228
+            208
           ]
         },
         "outputNode": {
@@ -254,8 +241,8 @@
               595
             ],
             "pos": [
-              866.162109375,
-              4264
+              717.5383668968193,
+              4395.138583430093
             ]
           },
           {
@@ -267,8 +254,8 @@
             ],
             "label": "width",
             "pos": [
-              866.162109375,
-              4284
+              717.5383668968193,
+              4415.138583430093
             ]
           },
           {
@@ -280,8 +267,8 @@
             ],
             "label": "height",
             "pos": [
-              866.162109375,
-              4304
+              717.5383668968193,
+              4435.138583430093
             ]
           },
           {
@@ -293,8 +280,8 @@
             ],
             "label": "duration",
             "pos": [
-              866.162109375,
-              4324
+              717.5383668968193,
+              4455.138583430093
             ]
           },
           {
@@ -307,21 +294,8 @@
               605
             ],
             "pos": [
-              866.162109375,
-              4344
-            ]
-          },
-          {
-            "id": "4afce68d-8f65-4342-9d6d-ae0a7688c3e3",
-            "name": "lora_name",
-            "type": "COMBO",
-            "linkIds": [
-              602
-            ],
-            "label": "distilled_lora",
-            "pos": [
-              866.162109375,
-              4364
+              717.5383668968193,
+              4475.138583430093
             ]
           },
           {
@@ -332,8 +306,8 @@
               606
             ],
             "pos": [
-              866.162109375,
-              4384
+              717.5383668968193,
+              4495.138583430093
             ]
           },
           {
@@ -345,8 +319,8 @@
             ],
             "label": "latent_upscale_model",
             "pos": [
-              866.162109375,
-              4404
+              717.5383668968193,
+              4515.138583430093
             ]
           },
           {
@@ -358,8 +332,8 @@
             ],
             "label": "fps",
             "pos": [
-              866.162109375,
-              4424
+              717.5383668968193,
+              4535.138583430093
             ]
           }
         ],
@@ -470,7 +444,7 @@
               }
             },
             "widgets_values": [
-              121696421281024,
+              121696421281025,
               "fixed"
             ]
           },
@@ -592,7 +566,7 @@
               }
             },
             "widgets_values": [
-              "ltx-2.3-22b-dev-fp8.safetensors"
+              "ltx-2.3-22b-distilled-fp8.safetensors"
             ]
           },
           {
@@ -2897,7 +2871,7 @@
             },
             "widgets_values": [
               "gemma_3_12B_it_fp4_mixed.safetensors",
-              "ltx-2.3-22b-dev-fp8.safetensors",
+              "ltx-2.3-22b-distilled-fp8.safetensors",
               "default"
             ]
           },
@@ -3082,77 +3056,6 @@
             ]
           },
           {
-            "id": 232,
-            "type": "LoraLoaderModelOnly",
-            "pos": [
-              1660,
-              3933.9999944513493
-            ],
-            "size": [
-              430,
-              166.65625
-            ],
-            "flags": {},
-            "order": 23,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "model",
-                "name": "model",
-                "type": "MODEL",
-                "link": 634
-              },
-              {
-                "localized_name": "lora_name",
-                "name": "lora_name",
-                "type": "COMBO",
-                "widget": {
-                  "name": "lora_name"
-                },
-                "link": 602
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "MODEL",
-                "name": "MODEL",
-                "type": "MODEL",
-                "links": [
-                  478,
-                  541
-                ]
-              }
-            ],
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.3.75",
-              "Node name for S&R": "LoraLoaderModelOnly",
-              "models": [
-                {
-                  "name": "ltx-2.3-22b-distilled-lora-384.safetensors",
-                  "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-lora-384.safetensors",
-                  "directory": "loras"
-                }
-              ],
-              "enableTabs": false,
-              "tabWidth": 65,
-              "tabXOffset": 10,
-              "hasSecondTab": false,
-              "secondTabText": "Send Back",
-              "secondTabOffset": 80,
-              "secondTabWidth": 65,
-              "ue_properties": {
-                "widget_ue_connectable": {},
-                "version": "7.7",
-                "input_ue_unconnectable": {}
-              }
-            },
-            "widgets_values": [
-              "ltx-2.3-22b-distilled-lora-384.safetensors",
-              0.5
-            ]
-          },
-          {
             "id": 236,
             "type": "CheckpointLoaderSimple",
             "pos": [
@@ -3227,7 +3130,7 @@
               }
             },
             "widgets_values": [
-              "ltx-2.3-22b-dev-fp8.safetensors"
+              "ltx-2.3-22b-distilled-fp8.safetensors"
             ]
           },
           {
@@ -3285,6 +3188,68 @@
             },
             "widgets_values": [
               "Dynamic cinematic close-up of high-tech modular chrome circut board, extremely detailed titanium textures. The final circut board displays a clean, clear surface with large glowing engraved text “Icarus LTX-2.3” centered and unobstructed, dramatic lighting, photorealism, 8K, sharp focus.\n"
+            ]
+          },
+          {
+            "id": 232,
+            "type": "LoraLoaderModelOnly",
+            "pos": [
+              1660,
+              3933.9999944513493
+            ],
+            "size": [
+              430,
+              166.65625
+            ],
+            "flags": {},
+            "order": 23,
+            "mode": 4,
+            "inputs": [
+              {
+                "localized_name": "model",
+                "name": "model",
+                "type": "MODEL",
+                "link": 634
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "MODEL",
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": [
+                  478,
+                  541
+                ]
+              }
+            ],
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.3.75",
+              "Node name for S&R": "LoraLoaderModelOnly",
+              "models": [
+                {
+                  "name": "ltx-2.3-22b-distilled-lora-384.safetensors",
+                  "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-lora-384.safetensors",
+                  "directory": "loras"
+                }
+              ],
+              "enableTabs": false,
+              "tabWidth": 65,
+              "tabXOffset": 10,
+              "hasSecondTab": false,
+              "secondTabText": "Send Back",
+              "secondTabOffset": 80,
+              "secondTabWidth": 65,
+              "ue_properties": {
+                "widget_ue_connectable": {},
+                "version": "7.7",
+                "input_ue_unconnectable": {}
+              }
+            },
+            "widgets_values": [
+              "ltx-2.3-22b-distilled-lora-384.safetensors",
+              0.5
             ]
           },
           {
@@ -3969,14 +3934,6 @@
             "type": "COMBO"
           },
           {
-            "id": 602,
-            "origin_id": -10,
-            "origin_slot": 5,
-            "target_id": 232,
-            "target_slot": 1,
-            "type": "COMBO"
-          },
-          {
             "id": 604,
             "origin_id": -10,
             "origin_slot": 4,
@@ -3995,7 +3952,7 @@
           {
             "id": 606,
             "origin_id": -10,
-            "origin_slot": 6,
+            "origin_slot": 5,
             "target_id": 243,
             "target_slot": 0,
             "type": "COMBO"
@@ -4003,7 +3960,7 @@
           {
             "id": 607,
             "origin_id": -10,
-            "origin_slot": 7,
+            "origin_slot": 6,
             "target_id": 233,
             "target_slot": 0,
             "type": "COMBO"
@@ -4035,7 +3992,7 @@
           {
             "id": 627,
             "origin_id": -10,
-            "origin_slot": 8,
+            "origin_slot": 7,
             "target_id": 260,
             "target_slot": 0,
             "type": "INT"
@@ -4506,10 +4463,10 @@
     "VHS_KeepIntermediate": true,
     "ue_links": [],
     "ds": {
-      "scale": 1.2839025177495011,
+      "scale": 1.1671841070450009,
       "offset": [
-        966.8129927493638,
-        -3398.6886702951897
+        998.5229384924884,
+        -3253.6648654647865
       ]
     }
   },
