@@ -283,12 +283,20 @@ The LTX node has a deliberately smaller surface than the FLUX one:
 | `forward_client_loras` | **OFF** | Same semantics as the FLUX node, but defaulted OFF on LTX because the LTX-AV 22B back-half is heavy enough that forwarding LoRAs can push <24 GB back-half cards into ComfyUI's dynamic-offload thrash regime (see warning below). Turn ON only if your back-half has 24+ GB free for LoRA buffers. |
 
 **Default is `raw`** — uncompressed bf16, the safe choice on every
-wire. If your wire is gigabit ethernet (or slower) and you want to
-trade a small quality hit for a ~3× smaller wire, switch to
-`Nvenc LTX (5090 optimized)` — it's the tuned sweet spot for LTX
-activations (pinned settings, validated on RTX 5090). The plain
-`nvenc` option is kept for completeness but isn't recommended for
-LTX content.
+wire.
+
+**Which codec mode to pick:**
+
+- **RTX 50-series (Blackwell) on both ends** → use
+  `Nvenc LTX (5090 optimized)`. This is where the tuned mode was
+  developed and validated; it's the best speed/quality balance
+  when both client and back-half server have a 50-series card.
+- **Anything older than 50-series** → stick with `raw`, or try
+  `nvenc` if you want a smaller wire and don't mind a quality
+  trade-off (plain `nvenc` on LTX content sometimes shows lower
+  contrast — A/B against `raw` on your specific workflow before
+  trusting it). The `Nvenc LTX (5090 optimized)` mode is
+  untested on older NVENC generations.
 
 There are no `codec_qp` / `codec_lossless` / `codec_tile_dim` widgets
 on the LTX node — those are pinned internally at the sweet spot that
