@@ -69,11 +69,17 @@ def main():
             break
     if found:
         print(f"  ComfyUI source    OK      {found}")
-        # Try the actual import we'll need
+        # Sanity-check the model-family modules we hook into. Each is
+        # only needed if you actually run that family's server, so a
+        # missing one is informational, not fatal.
         sys.path.insert(0, found)
-        ok, info = _try("comfy.ldm.flux.model")
-        sym = "OK     " if ok else "BROKEN"
-        print(f"  comfy.ldm.flux    {sym} {info}")
+        for label, mod in [
+            ("comfy.ldm.flux  ", "comfy.ldm.flux.model"),
+            ("comfy.ldm.ltx   ", "comfy.ldm.lightricks.av_model"),
+        ]:
+            ok, info = _try(mod)
+            sym = "OK     " if ok else "BROKEN "
+            print(f"  {label}  {sym} {info}")
     else:
         print(f"  ComfyUI source    MISSING checked: {[c for c in candidates if c]}")
         print(f"                    git clone https://github.com/comfyanonymous/ComfyUI ./ComfyUI")
@@ -88,13 +94,19 @@ def main():
         print(f"                    (the bundled package imports cuda-bindings —")
         print(f"                     install with: pip install cuda-bindings)")
 
-    # 6. Model file
-    weights = here / "flux-2-klein-9b-fp8.safetensors"
-    if weights.exists():
-        sz = weights.stat().st_size / 1024**3
-        print(f"  weights file      OK      {weights.name} ({sz:.2f} GB)")
+    # 6. Model file(s) — informational. The user picks the actual file
+    # in the GUI / via the bat's WEIGHTS=... line, so any .safetensors
+    # in this folder is a candidate. None present is fine on a fresh
+    # install — don't shout MISSING.
+    weights = sorted(here.glob("*.safetensors"))
+    if weights:
+        for w in weights:
+            sz = w.stat().st_size / 1024**3
+            print(f"  weights file      OK      {w.name} ({sz:.2f} GB)")
     else:
-        print(f"  weights file      MISSING expected at {weights}")
+        print(f"  weights file      INFO    no *.safetensors in {here}")
+        print(f"                    Drop your FLUX 2 or LTX checkpoint here, then")
+        print(f"                    launch the matching run_server_*.bat.")
 
     print("=" * 70)
 
