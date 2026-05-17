@@ -113,21 +113,41 @@ def build_synthetic_payload(diffusion, device, dtype):
     # Generate PE tuples via the model's own preparation method. This
     # produces (cos, sin, split_mode) 3-tuples at the exact shapes the
     # transformer blocks expect — no manual fabrication.
+    #
+    # Shape gotcha: LTX-AV's patchifiers are configured with start_end=True,
+    # so pixel_coords are 4D with last dim = 2 (start, end) — NOT 3D. The
+    # av_cross PE paths hardcode use_middle_indices_grid=True which asserts
+    # exactly this shape. Fabricating 3D coords manually crashes deep in
+    # generate_freqs(). Use the model's own patchifier infrastructure so
+    # the shapes are guaranteed to match.
+    #
     # Signature: _prepare_positional_embeddings(pixel_coords, frame_rate, x_dtype)
     # where pixel_coords is [video_pixel_coords, audio_latent_coords].
-    # video_pixel_coords: (B, 3, T_v) with rows (t, y, x)
-    # audio_latent_coords: (B, 1, T_a) with row (t)
-    v_pixel_coords = torch.zeros(B, 3, T_v, dtype=torch.float32, device=device)
-    for t in range(nF):
-        for y in range(nH):
-            for x in range(nW):
-                idx = t * nH * nW + y * nW + x
-                v_pixel_coords[0, 0, idx] = t
-                v_pixel_coords[0, 1, idx] = y
-                v_pixel_coords[0, 2, idx] = x
-    a_latent_coords = torch.zeros(B, 1, T_a, dtype=torch.float32, device=device)
-    for t in range(T_a):
-        a_latent_coords[0, 0, t] = t
+    # video_pixel_coords: (B, 3, T_v, 2)  — start/end pixel corners
+    # audio_latent_coords: (B, 1, T_a, 2) — start/end times in seconds
+    from comfy.ldm.lightricks.symmetric_patchifier import latent_to_pixel_coords
+
+    # Video: get patch-corner latent coords from the model's own patchifier,
+    # then scale to pixel coords using the model's vae_scale_factors.
+    v_latent_coords = diffusion.patchifier.get_latent_coords(
+        nF, nH, nW, B, device,
+    )
+    v_pixel_coords = latent_to_pixel_coords(
+        v_latent_coords,
+        scale_factors=diffusion.vae_scale_factors,
+        causal_fix=diffusion.causal_temporal_positioning,
+    ).to(torch.float32)
+
+    # Audio: mimic AudioPatchifier.patchify's audio_latents_timings output.
+    # Shape (B, 1, T_a, 2) where last dim is (start_sec, end_sec).
+    ap = diffusion.a_patchifier
+    a_starts = ap._get_audio_latent_time_in_sec(
+        ap.shift, T_a + ap.shift, torch.float32, device,
+    ).unsqueeze(0).expand(B, -1).unsqueeze(1)
+    a_ends = ap._get_audio_latent_time_in_sec(
+        ap.shift + 1, T_a + ap.shift + 1, torch.float32, device,
+    ).unsqueeze(0).expand(B, -1).unsqueeze(1)
+    a_latent_coords = torch.stack([a_starts, a_ends], dim=-1)
 
     frame_rate = 30
     pe_list = diffusion._prepare_positional_embeddings(
