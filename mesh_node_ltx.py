@@ -1024,18 +1024,43 @@ def _strip_diffusion_back_half_ltx(
     n_total = len(diffusion.transformer_blocks)
     requested = (n_blocks_remote, n_total)
 
+    # Count actual MeshRemoteStub instances currently in the ModuleList.
+    # The recorded _mesh_strip_config_ltx is the COMPLEMENT — what we
+    # asked for last time — but the user reported cases where the gen
+    # works after lowering n_blocks_remote with no error. The most
+    # likely explanation is that ComfyUI unloaded the diffusion module
+    # between gens and reloaded it fresh, wiping our stubs. If the
+    # actual stub count disagrees with the recorded prior config, the
+    # model was reloaded under us; we treat that as a fresh strip.
+    actual_stub_count = sum(
+        1 for blk in diffusion.transformer_blocks if isinstance(blk, MeshRemoteStub)
+    )
     prior = getattr(diffusion, "_mesh_strip_config_ltx", None)
+
+    if prior is not None:
+        prior_n, prior_total = prior
+        if prior_total != n_total or actual_stub_count != prior_n:
+            print(
+                f"[mesh] LTX strip: stale prior config "
+                f"(was {prior}, actual stubs={actual_stub_count}/{n_total}) — "
+                "ComfyUI reloaded the diffusion module fresh; "
+                "discarding prior + treating as fresh strip"
+            )
+            prior = None
+
     if prior is None:
         new_range = range(n_total - n_blocks_remote, n_total)
+        print(
+            f"[mesh] LTX strip: fresh strip of last {n_blocks_remote} of "
+            f"{n_total} transformer_blocks"
+        )
     else:
         prior_n, prior_total = prior
-        if prior_total != n_total:
-            raise RuntimeError(
-                f"Model shape changed since last mesh-strip "
-                f"(was {prior_total} transformer_blocks, now {n_total}). "
-                "Reload the model before re-running with mesh."
-            )
         if prior_n == n_blocks_remote:
+            print(
+                f"[mesh] LTX strip: already stripped for n_blocks_remote="
+                f"{n_blocks_remote} (no-op)"
+            )
             return 0  # already stripped for this exact config
         if prior_n > n_blocks_remote:
             raise MeshDecreaseNeedsReload(
@@ -1046,6 +1071,10 @@ def _strip_diffusion_back_half_ltx(
             )
         # Increase — strip the NEWLY-back-half blocks (the ones not yet stubbed).
         new_range = range(n_total - n_blocks_remote, n_total - prior_n)
+        print(
+            f"[mesh] LTX strip: extending strip {prior_n}→{n_blocks_remote} "
+            f"(strip range {list(new_range)})"
+        )
 
     stripped_count = 0
     for i in new_range:
@@ -1059,6 +1088,21 @@ def _strip_diffusion_back_half_ltx(
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # Post-strip sanity confirmation visible in the console.
+    post_stubs = sum(
+        1 for blk in diffusion.transformer_blocks if isinstance(blk, MeshRemoteStub)
+    )
+    stub_idx = [
+        i for i, blk in enumerate(diffusion.transformer_blocks)
+        if isinstance(blk, MeshRemoteStub)
+    ]
+    print(
+        f"[mesh] LTX strip: post-strip transformer_blocks state: "
+        f"{post_stubs}/{n_total} are MeshRemoteStub (server-side), "
+        f"{n_total - post_stubs}/{n_total} are real (client-side). "
+        f"Stub indices: {stub_idx[:5]}{'...' if len(stub_idx) > 5 else ''}"
+    )
 
     return stripped_count
 
