@@ -169,12 +169,19 @@ def build_synthetic_payload(diffusion, device, dtype):
         "a_cross_gate_timestep": make_ts(B, T_a, n_ca_gate, a_dim),
         # prompt_timestep is required when cross_attention_adaln=True
         # (block has prompt_scale_shift_table); otherwise None is fine.
-        # T_prompt = text-context token count, feature_dim = 2 * dim.
+        # Crucially this is a BARE torch.Tensor of shape (B, 1, 2*dim),
+        # NOT a CompressedTimestep — compute_prompt_timestep in
+        # model.py returns `prompt_ts.view(batch_size, 1, ...)`. The
+        # apply_cross_attention_adaln code calls .reshape() on it
+        # directly, so wrapping in CompressedTimestep crashes with
+        # AttributeError.
         "v_prompt_timestep": (
-            make_ts(B, C_v, n_prompt, v_dim) if has_v_prompt else None
+            torch.randn(B, 1, n_prompt * v_dim, dtype=dtype, device=device) * 0.01
+            if has_v_prompt else None
         ),
         "a_prompt_timestep": (
-            make_ts(B, C_a, n_prompt, a_dim) if has_a_prompt else None
+            torch.randn(B, 1, n_prompt * a_dim, dtype=dtype, device=device) * 0.01
+            if has_a_prompt else None
         ),
         "self_attention_mask": None,
         "transformer_options": {
