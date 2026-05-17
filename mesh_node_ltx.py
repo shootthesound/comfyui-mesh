@@ -1158,6 +1158,13 @@ class MeshSplitLTX:
                                                        )}),
             },
             "hidden": {
+                # DYNPROMPT lets configure() walk the ephemeral-parent
+                # chain to find the visible subgraph-instance node when
+                # this Icarus LTX node is nested inside a subgraph. Without
+                # it, _send_node_message targets the ephemeral inner id
+                # which the frontend can't find in the top-level graph,
+                # so the banner-paint silently fails.
+                "dynprompt": "DYNPROMPT",
                 # ComfyUI passes the runtime node id here; we use it to
                 # send a `mesh-ltx-message` websocket event back to the JS
                 # extension so it can render an inline banner under
@@ -1172,7 +1179,7 @@ class MeshSplitLTX:
     CATEGORY = "mesh"
     OUTPUT_NODE = False
 
-    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, forward_client_loras, unique_id=None):
+    def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, forward_client_loras, unique_id=None, dynprompt=None):
         # The LTX path uses fixed codec params — "Nvenc LTX" mode is the
         # tuned sweet spot (qp=1 near-lossless on the bulk, lossless=False,
         # tile_dim=8 max-throughput). Exposing those as separate inputs
@@ -1180,6 +1187,19 @@ class MeshSplitLTX:
         codec_qp = 1
         codec_lossless = False
         codec_tile_dim = 8
+
+        # Resolve unique_id → display_node_id so warn/clear banners land
+        # on the visible top-level node when this Icarus LTX node is
+        # nested inside a subgraph. ComfyUI's dynprompt walks the
+        # ephemeral-parent chain to find the outermost visible node.
+        # Falls back to unique_id verbatim when not nested or when
+        # dynprompt isn't available (older ComfyUI).
+        display_id = unique_id
+        if dynprompt is not None and unique_id is not None:
+            try:
+                display_id = dynprompt.get_display_node_id(unique_id)
+            except Exception:
+                pass
 
         diffusion = model.model.diffusion_model
         diff_cls_name = type(diffusion).__name__
@@ -1225,7 +1245,7 @@ class MeshSplitLTX:
                     f"restart the server with n_blocks={n_blocks_remote}, "
                     f"or set n_blocks_remote back to {client.server_n_blocks}."
                 )
-                _send_node_message(unique_id, "warn", pending_msg)
+                _send_node_message(display_id, "warn", pending_msg)
                 raise MeshServerNeedsReconfigure(pending_msg)
 
         # Free VRAM held by back-half transformer_blocks on the client.
@@ -1237,9 +1257,9 @@ class MeshSplitLTX:
             try:
                 stripped = _strip_diffusion_back_half_ltx(diffusion, n_blocks_remote)
             except MeshDecreaseNeedsReload as e:
-                _send_node_message(unique_id, "warn", str(e))
+                _send_node_message(display_id, "warn", str(e))
                 raise
-            _send_node_message(unique_id, "clear", "")
+            _send_node_message(display_id, "clear", "")
             if stripped:
                 print(f"[mesh] LTX stripped {stripped} back-half transformer_blocks from client VRAM")
 
