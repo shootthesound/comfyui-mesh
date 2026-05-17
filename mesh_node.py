@@ -801,6 +801,15 @@ def _strip_diffusion_back_half(
         if torch.cuda.is_available():
             torch.cuda.synchronize()  # ensure pending ops finish before empty_cache
             torch.cuda.empty_cache()
+        # Ask ComfyUI's model_management to actually evict any stale
+        # GPU copies of the now-stripped weights. See the equivalent
+        # comment in mesh_node_ltx.py for the reasoning.
+        try:
+            import comfy.model_management as mm
+            mm.free_memory(1e30, mm.get_torch_device())
+            mm.soft_empty_cache(True)
+        except Exception as e:
+            print(f"[mesh] FLUX strip: comfy free_memory call failed (non-fatal): {e}")
 
     # VRAM-after snapshot + report.
     mem_after = (

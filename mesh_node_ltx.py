@@ -704,7 +704,29 @@ def _make_ltx_block_replacement(
     """
     drop_n = n_transformer_blocks - n_remote
 
+    # One-shot VRAM-on-GPU probe — fires the FIRST time replace_at_split
+    # actually runs (i.e. first timestep of the first gen). configure()
+    # logs VRAM at queue time when the model isn't on GPU yet (only
+    # ~47 MB allocated); this probe runs when the model HAS loaded for
+    # sampling, so the number is the meaningful one for "did the strip
+    # actually save VRAM at sampling time?"
+    _probe_state = {"fired": False}
+
     def replace_at_split(args, extras):
+        if not _probe_state["fired"]:
+            _probe_state["fired"] = True
+            try:
+                if torch.cuda.is_available():
+                    mem_mb = torch.cuda.memory_allocated() / (1024 * 1024)
+                    print(
+                        f"[mesh] LTX wire intercept: first call, "
+                        f"sampling-time VRAM allocated = {mem_mb:.0f} MB. "
+                        f"(For comparison: full LTX-AV without offload is "
+                        f"~24000 MB; expected here ~{int(24000 * n_transformer_blocks / 48 * (n_transformer_blocks - n_remote) / n_transformer_blocks)} MB "
+                        f"front-half blocks + ~3000 MB encoders/etc).")
+            except Exception as e:
+                print(f"[mesh] LTX wire intercept probe failed (non-fatal): {e}")
+
         for attempt in (1, 2):
             client_lora_session = ""
             client_lora_blob = b""
@@ -1142,6 +1164,20 @@ def _strip_diffusion_back_half_ltx(
         if torch.cuda.is_available():
             torch.cuda.synchronize()  # ensure pending ops finish before empty_cache
             torch.cuda.empty_cache()
+        # Ask ComfyUI's model_management to actually evict any stale
+        # GPU copies of the now-stripped weights. The strip mutates the
+        # nn.Module in place, but if ComfyUI already loaded the back-
+        # half blocks to GPU on a prior gen, the GPU copy persists
+        # until the patcher's lifecycle naturally re-loads. free_memory
+        # forces an eviction NOW so the next sampling step starts from
+        # the slim state. soft_empty_cache then returns the freed
+        # blocks to CUDA's allocator pool.
+        try:
+            import comfy.model_management as mm
+            mm.free_memory(1e30, mm.get_torch_device())
+            mm.soft_empty_cache(True)
+        except Exception as e:
+            print(f"[mesh] LTX strip: comfy free_memory call failed (non-fatal): {e}")
 
     # VRAM-after snapshot + report.
     mem_after = (
