@@ -1006,6 +1006,45 @@ def _split_back_half_patches(
 # single split index.
 # ---------------------------------------------------------------------
 
+def _force_release_block_vram(block: nn.Module) -> int:
+    """Aggressively release the CUDA memory backing every parameter and
+    buffer in `block`. Returns approximate bytes freed.
+
+    Pattern: replace each parameter/buffer's `.data` with a zero-sized
+    empty tensor on the same device + dtype. The original storage
+    becomes unreferenced — ComfyUI's patcher / LoRA mapper / state_dict
+    snapshots that still hold a reference to the Parameter object stay
+    valid (the wrapper is alive), but its underlying tensor is now
+    empty. After this, gc.collect() + torch.cuda.empty_cache() actually
+    triggers the cudaFree.
+
+    Without this step, simply replacing the block in the ModuleList with
+    a parameter-less stub doesn't free VRAM, because ComfyUI's
+    ModelPatcher cached a state_dict snapshot at model-load time that
+    still holds references to every original Parameter object. The
+    storage stays alive until those references die — which they don't,
+    because the patcher persists for the session.
+    """
+    freed_bytes = 0
+    for name, param in list(block.named_parameters(recurse=True)):
+        try:
+            sz = param.data.element_size() * param.data.numel()
+            param.data = torch.empty(0, device=param.data.device, dtype=param.data.dtype)
+            freed_bytes += sz
+        except Exception as e:
+            print(f"[mesh] _force_release: failed to release param {name}: {e}")
+    for name, buf in list(block.named_buffers(recurse=True)):
+        try:
+            sz = buf.element_size() * buf.numel()
+            # Buffers are stored in ._buffers dict on the parent module;
+            # the safe in-place replacement is .data = empty just like params.
+            buf.data = torch.empty(0, device=buf.device, dtype=buf.dtype)
+            freed_bytes += sz
+        except Exception as e:
+            print(f"[mesh] _force_release: failed to release buffer {name}: {e}")
+    return freed_bytes
+
+
 def _strip_diffusion_back_half_ltx(
     diffusion: nn.Module,
     n_blocks_remote: int,
@@ -1076,9 +1115,23 @@ def _strip_diffusion_back_half_ltx(
             f"(strip range {list(new_range)})"
         )
 
+    # VRAM-before snapshot for visible delta logging. CUDA-only.
+    mem_before = (
+        torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    )
+
     stripped_count = 0
+    freed_bytes = 0
     for i in new_range:
         sig = _capture_block_param_signature(diffusion.transformer_blocks[i])
+        # 1. Force-release the block's parameter + buffer storages so the
+        #    underlying CUDA memory actually becomes unreferenced.
+        #    ComfyUI's patcher / LoRA mapper may still hold references
+        #    to the Parameter objects, but their .data is now empty.
+        freed_bytes += _force_release_block_vram(diffusion.transformer_blocks[i])
+        # 2. Replace the block in the ModuleList with the parameter-less
+        #    stub. The stub keeps the state_dict key signature so the
+        #    LoRA mapper still works.
         diffusion.transformer_blocks[i] = MeshRemoteStub(sig)
         stripped_count += 1
 
@@ -1087,7 +1140,16 @@ def _strip_diffusion_back_half_ltx(
     if stripped_count > 0:
         gc.collect()
         if torch.cuda.is_available():
+            torch.cuda.synchronize()  # ensure pending ops finish before empty_cache
             torch.cuda.empty_cache()
+
+    # VRAM-after snapshot + report.
+    mem_after = (
+        torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    )
+    delta_mb = (mem_before - mem_after) / (1024 * 1024)
+    freed_mb = freed_bytes / (1024 * 1024)
+    expected_mb = freed_mb
 
     # Post-strip sanity confirmation visible in the console.
     post_stubs = sum(
@@ -1102,6 +1164,12 @@ def _strip_diffusion_back_half_ltx(
         f"{post_stubs}/{n_total} are MeshRemoteStub (server-side), "
         f"{n_total - post_stubs}/{n_total} are real (client-side). "
         f"Stub indices: {stub_idx[:5]}{'...' if len(stub_idx) > 5 else ''}"
+    )
+    print(
+        f"[mesh] LTX strip: VRAM allocated {mem_before / 1024 / 1024:.0f} MB "
+        f"-> {mem_after / 1024 / 1024:.0f} MB "
+        f"(actual delta {delta_mb:.0f} MB, expected freed {expected_mb:.0f} MB "
+        f"from {stripped_count} block parameter storages)"
     )
 
     return stripped_count
