@@ -1299,13 +1299,6 @@ def main():
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
     device = torch.device(args.device)
 
-    print("=" * 64)
-    print("ComfyUI Mesh : Daedalus LTX (experimental branch)")
-    print("Wire path: forward_ltx_blocks + per-block payload (raw, no codec).")
-    print("Codec compression for vx/ax is a follow-up once correctness is")
-    print("validated against a single-GPU baseline.")
-    print("=" * 64)
-
     _wait_for_vram(device)
     patcher = load_ltx_av(args.weights, device, dtype, n_blocks=args.n_blocks)
     if args.lora is not None:
