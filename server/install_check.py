@@ -69,17 +69,22 @@ def main():
             break
     if found:
         print(f"  ComfyUI source    OK      {found}")
-        # Sanity-check the model-family modules we hook into. Each is
-        # only needed if you actually run that family's server, so a
-        # missing one is informational, not fatal.
+        # Verify the user's ComfyUI checkout actually contains the
+        # model-family code we hook into. An old ComfyUI clone may
+        # predate LTX-AV support; this catches that before the server
+        # crashes on first request. Each family is only needed if you
+        # run its server, so a missing one is informational.
         sys.path.insert(0, found)
-        for label, mod in [
-            ("comfy.ldm.flux  ", "comfy.ldm.flux.model"),
-            ("comfy.ldm.ltx   ", "comfy.ldm.lightricks.av_model"),
+        for label, mod, family in [
+            ("FLUX 2 support  ", "comfy.ldm.flux.model",          "needed for run_server_flux2_*.bat"),
+            ("LTX-AV support  ", "comfy.ldm.lightricks.av_model", "needed for run_server_ltx_*.bat"),
         ]:
             ok, info = _try(mod)
-            sym = "OK     " if ok else "BROKEN "
-            print(f"  {label}  {sym} {info}")
+            if ok:
+                print(f"  {label}  OK      ({mod} imports cleanly)")
+            else:
+                print(f"  {label}  MISSING ({family})")
+                print(f"                    Update ComfyUI: cd ComfyUI && git pull")
     else:
         print(f"  ComfyUI source    MISSING checked: {[c for c in candidates if c]}")
         print(f"                    git clone https://github.com/comfyanonymous/ComfyUI ./ComfyUI")
