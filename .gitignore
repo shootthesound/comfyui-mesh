@@ -20,3 +20,7 @@ server/ComfyUI/
 
 # per-user GUI state
 mesh_server_gui_settings.json
+mesh_server_ltx_gui_settings.json
+
+# Claude / agent working notes — internal, not for the public repo
+CLAUDE.md
