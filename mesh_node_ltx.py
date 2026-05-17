@@ -1137,20 +1137,14 @@ def _strip_diffusion_back_half_ltx(
             f"(strip range {list(new_range)})"
         )
 
-    # VRAM-before snapshot for visible delta logging. CUDA-only.
-    mem_before = (
-        torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-    )
-
     stripped_count = 0
-    freed_bytes = 0
     for i in new_range:
         sig = _capture_block_param_signature(diffusion.transformer_blocks[i])
         # 1. Force-release the block's parameter + buffer storages so the
         #    underlying CUDA memory actually becomes unreferenced.
         #    ComfyUI's patcher / LoRA mapper may still hold references
         #    to the Parameter objects, but their .data is now empty.
-        freed_bytes += _force_release_block_vram(diffusion.transformer_blocks[i])
+        _force_release_block_vram(diffusion.transformer_blocks[i])
         # 2. Replace the block in the ModuleList with the parameter-less
         #    stub. The stub keeps the state_dict key signature so the
         #    LoRA mapper still works.
@@ -1179,15 +1173,11 @@ def _strip_diffusion_back_half_ltx(
         except Exception as e:
             print(f"[mesh] LTX strip: comfy free_memory call failed (non-fatal): {e}")
 
-    # VRAM-after snapshot + report.
-    mem_after = (
-        torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-    )
-    delta_mb = (mem_before - mem_after) / (1024 * 1024)
-    freed_mb = freed_bytes / (1024 * 1024)
-    expected_mb = freed_mb
-
-    # Post-strip sanity confirmation visible in the console.
+    # Post-strip sanity confirmation visible in the console. The
+    # ComfyUI-native 'Model LTXAV prepared for dynamic VRAM loading.
+    # NNNNMB Staged.' line on the next load is the load-budget delta;
+    # the [mesh] LTX wire intercept line (from _make_ltx_block_replacement)
+    # logs the actual sampling-time VRAM allocated.
     post_stubs = sum(
         1 for blk in diffusion.transformer_blocks if isinstance(blk, MeshRemoteStub)
     )
@@ -1200,12 +1190,6 @@ def _strip_diffusion_back_half_ltx(
         f"{post_stubs}/{n_total} are MeshRemoteStub (server-side), "
         f"{n_total - post_stubs}/{n_total} are real (client-side). "
         f"Stub indices: {stub_idx[:5]}{'...' if len(stub_idx) > 5 else ''}"
-    )
-    print(
-        f"[mesh] LTX strip: VRAM allocated {mem_before / 1024 / 1024:.0f} MB "
-        f"-> {mem_after / 1024 / 1024:.0f} MB "
-        f"(actual delta {delta_mb:.0f} MB, expected freed {expected_mb:.0f} MB "
-        f"from {stripped_count} block parameter storages)"
     )
 
     return stripped_count

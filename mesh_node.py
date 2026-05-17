@@ -770,26 +770,20 @@ def _strip_diffusion_back_half(
         # Singles: new range extends the strip later in the stack.
         new_sb_range = range(prior_sb, n_single_remote)
 
-    # VRAM-before snapshot for visible delta logging.
-    mem_before = (
-        torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-    )
-
     # Strip — capture each block's parameter signature first so the stub
     # can keep presenting those keys in state_dict (LoRA mapping needs them).
     # Force-release each block's parameter storage BEFORE swapping in the
     # stub, so the underlying CUDA memory actually becomes unreferenced —
     # see _force_release_block_vram for the why.
     stripped_count = 0
-    freed_bytes = 0
     for i in new_db_range:
         sig = _capture_block_param_signature(diffusion.double_blocks[i])
-        freed_bytes += _force_release_block_vram(diffusion.double_blocks[i])
+        _force_release_block_vram(diffusion.double_blocks[i])
         diffusion.double_blocks[i] = MeshRemoteStub(sig)
         stripped_count += 1
     for i in new_sb_range:
         sig = _capture_block_param_signature(diffusion.single_blocks[i])
-        freed_bytes += _force_release_block_vram(diffusion.single_blocks[i])
+        _force_release_block_vram(diffusion.single_blocks[i])
         diffusion.single_blocks[i] = MeshRemoteStub(sig)
         stripped_count += 1
 
@@ -810,19 +804,6 @@ def _strip_diffusion_back_half(
             mm.soft_empty_cache(True)
         except Exception as e:
             print(f"[mesh] FLUX strip: comfy free_memory call failed (non-fatal): {e}")
-
-    # VRAM-after snapshot + report.
-    mem_after = (
-        torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-    )
-    delta_mb = (mem_before - mem_after) / (1024 * 1024)
-    freed_mb = freed_bytes / (1024 * 1024)
-    print(
-        f"[mesh] FLUX strip: VRAM allocated {mem_before / 1024 / 1024:.0f} MB "
-        f"-> {mem_after / 1024 / 1024:.0f} MB "
-        f"(actual delta {delta_mb:.0f} MB, expected freed {freed_mb:.0f} MB "
-        f"from {stripped_count} block parameter storages)"
-    )
 
     return stripped_count
 
