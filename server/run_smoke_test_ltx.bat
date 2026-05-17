@@ -1,6 +1,6 @@
 @echo off
-REM Launcher: LTX-AV server-side smoke test, with logging to a timestamped
-REM text file in this folder so you can inspect / share the result later.
+REM Launcher: LTX-AV server-side smoke test. Output stays on screen so
+REM you can copy/paste it; the window doesn't auto-close.
 REM
 REM Loads the LTX-AV slim back-half via load_ltx_av(), builds a synthetic
 REM block_wrap payload, runs forward_back_half_ltx() once, asserts the
@@ -12,7 +12,7 @@ REM versions of comfy.ldm.lightricks.av_model.
 REM
 REM Expected wall-clock: ~30-60s (model load dominates).
 
-setlocal enabledelayedexpansion
+setlocal
 
 REM ============================================================
 REM  EDIT THIS: number of back-half transformer_blocks to slim-load
@@ -43,17 +43,7 @@ if exist "%VENV_PY%" (
     echo [run_smoke] WARNING: %VENV_PY% not found, falling back to 'python' on PATH
 )
 
-REM ---- 3. Build a timestamped log filename ----
-REM Format: smoke_test_ltx_YYYYMMDD_HHMMSS.log (no spaces/colons that
-REM Windows filesystems hate). %DATE% / %TIME% format is locale-
-REM dependent so we extract via wmic which is always YYYYMMDDHHMMSS.NN.
-for /f %%i in ('wmic os get localdatetime ^| findstr /r "^[0-9]"') do set DT=%%i
-set "STAMP=%DT:~0,8%_%DT:~8,6%"
-set "LOG=%~dp0smoke_test_ltx_%STAMP%.log"
-echo [run_smoke] logging to: %LOG%
-echo.
-
-REM ---- 4. Sanity: weights present ----
+REM ---- 3. Sanity: weights present ----
 if not exist "%WEIGHTS%" (
     echo.
     echo [run_smoke] ERROR: weights file not found:
@@ -61,31 +51,22 @@ if not exist "%WEIGHTS%" (
     echo.
     echo Either drop the .safetensors file into this folder, or edit the
     echo WEIGHTS= line near the top of this .bat to point at it.
+    echo.
     pause
     exit /b 2
 )
 
-REM ---- 5. Launch the smoke test, capturing output to the log file
-REM       AND showing it live on the console via PowerShell's Tee-Object.
-REM       PowerShell is always present on Windows so this needs no
-REM       extra install. The %errorlevel% from the python process gets
-REM       lost through the pipe, so we re-read it from the captured
-REM       log's last line by grepping for the SMOKE TEST footer.
+REM ---- 4. Launch the smoke test. Output goes directly to this
+REM       console; no log file, nothing to clean up.
 REM ============================================================
-"%PY%" -u "%~dp0smoke_test_server_ltx.py" --weights "%WEIGHTS%" --n-blocks %N_BLOCKS% --device cuda:0 --dtype bfloat16 2>&1 | "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "$input | Tee-Object -FilePath '%LOG%'"
+echo.
+echo [run_smoke] launching smoke test...
+echo.
 
+"%PY%" -u "%~dp0smoke_test_server_ltx.py" --weights "%WEIGHTS%" --n-blocks %N_BLOCKS% --device cuda:0 --dtype bfloat16
+
+REM ---- 5. Hold the window open so the user can read / copy the output.
+REM       Pause regardless of exit code.
 echo.
-echo [run_smoke] done. Full log saved at:
-echo   %LOG%
-echo.
-findstr /c:"SMOKE TEST PASSED" "%LOG%" >nul
-if %errorlevel%==0 (
-    echo [run_smoke] RESULT: PASSED
-    set "RC=0"
-) else (
-    echo [run_smoke] RESULT: FAILED ^(see log for FAIL lines^)
-    set "RC=1"
-)
-echo.
-pause
-exit /b %RC%
+echo [run_smoke] done. Press any key to close this window.
+pause >nul
