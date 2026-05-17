@@ -3,8 +3,8 @@ REM Launcher for the comfyui-mesh back-half server on the 4090 machine.
 REM
 REM This is the "default" launcher -- uses whichever GPU CUDA picks (usually
 REM GPU 0). For an explicit GPU choice on a multi-GPU host, use:
-REM     run_server_gpu0.bat   (pins to physical GPU 0)
-REM     run_server_gpu1.bat   (pins to physical GPU 1)
+REM     run_server_flux2_gpu0.bat   (pins to physical GPU 0)
+REM     run_server_flux2_gpu1.bat   (pins to physical GPU 1)
 
 setlocal
 

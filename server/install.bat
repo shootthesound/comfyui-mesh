@@ -20,8 +20,9 @@ REM  Re-run safely -- every step is idempotent. Skips work already done.
 REM
 REM  To pull a newer ComfyUI later:  update_comfy.bat
 REM
-REM  After this finishes, drop your FLUX safetensors into this folder
-REM  and double-click run_server_gui.bat (or run_server.bat).
+REM  After this finishes, drop your FLUX 2 or LTX safetensors into this
+REM  folder and double-click run_server_flux2_gui.bat or
+REM  run_server_ltx_gui.bat (or the matching headless _gpu0/_gpu1 bat).
 REM ============================================================
 
 setlocal enabledelayedexpansion
@@ -147,12 +148,14 @@ echo  Install complete.
 echo ============================================================
 echo.
 echo  Next:
-echo    1. Drop your FLUX safetensors checkpoint into this folder
-echo       ^(e.g. flux-2-klein-9b-fp8.safetensors^)
+echo    1. Drop your FLUX 2 or LTX safetensors checkpoint into this folder
+echo       ^(e.g. flux-2-klein-9b-fp8.safetensors or ltx-2.3-22b-dev-fp8.safetensors^)
 echo.
-echo    2. Launch the server:
-echo         run_server_gui.bat   ^(Tkinter UI -- recommended for first run^)
-echo         run_server.bat       ^(headless; edit N_BLOCKS at the top first^)
+echo    2. Launch the server (Tkinter UI -- recommended for first run):
+echo         run_server_flux2_gui.bat   ^(FLUX 2 back-half^)
+echo         run_server_ltx_gui.bat     ^(LTX-AV back-half^)
+echo       or headless (edit N_BLOCKS at the top of the .bat first):
+echo         run_server_flux2.bat / run_server_ltx.bat
 echo.
 echo  The server listens on 0.0.0.0:7777 by default. Tell the
 echo  ComfyUI client this host's LAN/VPN IP and that port.

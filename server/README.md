@@ -78,16 +78,16 @@ server/
 │ ─── helpers + launchers ───
 ├── smoke_test_server.py        ← validates model load + back-half forward
 ├── install_check.py            ← env pre-flight (deps + cuda + comfy + weights)
-├── _splash.cmd                 ← cmd-console "starting…" splash launched by the
-│                                  GUI bat in parallel with pythonw, polls a sentinel
-│                                  file and self-closes when the GUI window paints
+├── _splash_flux2.cmd           ← cmd-console "starting…" splash launched by the
+│                                  FLUX 2 GUI bat in parallel with pythonw, polls a
+│                                  sentinel file and self-closes when the GUI paints
 ├── _splash_ltx.cmd             ← same, for the LTX GUI's launcher
-├── run_server_gui.bat          ← launch the FLUX GUI (recommended for first FLUX run)
+├── run_server_flux2_gui.bat    ← launch the FLUX 2 GUI (recommended for first FLUX run)
 ├── run_server_ltx_gui.bat      ← launch the LTX GUI (recommended for first LTX run)
-├── run_server.bat              ← headless FLUX launcher, no GPU pinning
-├── run_server_gpu0.bat         ← same-host: pin FLUX server to physical GPU 0
-├── run_server_gpu1.bat         ← same-host: pin FLUX server to physical GPU 1
-└── run_server_cpu.bat          ← FLUX CPU / system-RAM mode (slow; raw codec only)
+├── run_server_flux2.bat        ← headless FLUX 2 launcher, no GPU pinning
+├── run_server_flux2_gpu0.bat   ← same-host: pin FLUX 2 server to physical GPU 0
+├── run_server_flux2_gpu1.bat   ← same-host: pin FLUX 2 server to physical GPU 1
+└── run_server_flux2_cpu.bat    ← FLUX 2 CPU / system-RAM mode (slow; raw codec only)
 ```
 
 Files in `codec.py / protocol.py / vec_io.py / payload_ltx.py /
@@ -232,7 +232,8 @@ below.
 ### Option A: GUI (recommended for first run)
 
 ```
-run_server_gui.bat
+run_server_flux2_gui.bat     (FLUX 2)
+run_server_ltx_gui.bat       (LTX-AV)
 ```
 
 Opens a Tkinter window with:
@@ -324,10 +325,10 @@ Pick the right launcher for your topology:
 
 | Launcher | Use case |
 |---|---|
-| `run_server.bat` | Cross-machine — this host has one GPU, no ambiguity |
-| `run_server_gpu0.bat` | Same-host two-GPU rig, server on physical GPU 0 |
-| `run_server_gpu1.bat` | Same-host two-GPU rig, server on physical GPU 1 |
-| `run_server_cpu.bat` | CPU / system-RAM mode (slow; requires `codec_mode=raw` on client) |
+| `run_server_flux2.bat` / `run_server_ltx.bat` | Cross-machine — this host has one GPU, no ambiguity |
+| `run_server_flux2_gpu0.bat` / `run_server_ltx_gpu0.bat` | Same-host two-GPU rig, server on physical GPU 0 |
+| `run_server_flux2_gpu1.bat` / `run_server_ltx_gpu1.bat` | Same-host two-GPU rig, server on physical GPU 1 |
+| `run_server_flux2_cpu.bat` / `run_server_ltx_cpu.bat` | CPU / system-RAM mode (slow; requires `codec_mode=raw` on client) |
 
 The `_gpu0` / `_gpu1` variants use `CUDA_VISIBLE_DEVICES` to pin the
 process to one card so it doesn't compete with ComfyUI on the other.
@@ -460,8 +461,9 @@ session instead of per timestep. Not done yet.
 
 ## Same-host two-GPU notes
 
-Use `run_server_gpu0.bat` / `run_server_gpu1.bat` depending on which
-card ComfyUI is using on the other side.
+Use `run_server_flux2_gpu0.bat` / `run_server_flux2_gpu1.bat` (or the
+matching `_ltx_gpu0` / `_ltx_gpu1` for LTX-AV) depending on which card
+ComfyUI is using on the other side.
 
 Two important things to know about same-host setups:
 

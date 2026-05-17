@@ -36,7 +36,7 @@ REM ---- Launch the cmd-console splash in parallel. It tells the user
 REM ---- something is happening during the 10-30s python.exe + venv +
 REM ---- tkinter cold start, and self-closes once mesh_server_gui.py
 REM ---- writes the ready sentinel.
-start "comfyui-mesh starting" "%~dp0_splash.cmd"
+start "ComfyUI Mesh : Daedalus FLUX 2 starting" "%~dp0_splash_flux2.cmd"
 
 REM ---- Launch the GUI (uses pythonw if available so no console window) ----
 set "VENV_PYW=%~dp0.venv\Scripts\pythonw.exe"

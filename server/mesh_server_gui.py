@@ -15,7 +15,7 @@ The actual back-half forward is still mesh_server.py.
 Run on the 4090:
     python mesh_server_gui.py
 or
-    run_server_gui.bat
+    run_server_flux2_gui.bat
 """
 
 from __future__ import annotations
@@ -44,6 +44,91 @@ HERE = Path(__file__).parent
 SETTINGS_FILE = HERE / "mesh_server_gui_settings.json"
 STARTUP_LOG = HERE / "mesh_server_gui_startup.log"
 READY_SENTINEL = HERE / "mesh_server_gui_ready.tmp"
+
+
+# =====================================================================
+# Fast file picker — bypasses tkinter.filedialog's IFileOpenDialog path
+# which enumerates the full Windows shell namespace (mapped network
+# drives, cloud-sync providers like RaiDrive / OneDrive, etc.) on every
+# open. With even one slow / stale mount in `net use`, the modern dialog
+# stalls for the SMB timeout (~10-30s) per click. The legacy
+# GetOpenFileNameW with OFN_NONETWORKBUTTON skips the network sidebar
+# entirely and opens in well under a second.
+# Falls back to tkinter.filedialog on non-Windows.
+# =====================================================================
+def _fast_askopenfilename(title="Open", initialdir=None, filetypes=None):
+    if sys.platform != "win32":
+        return filedialog.askopenfilename(
+            title=title, initialdir=initialdir, filetypes=filetypes or [],
+        )
+
+    import ctypes
+    from ctypes import wintypes
+
+    if filetypes:
+        filter_str = "".join(f"{name}\0{mask}\0" for name, mask in filetypes) + "\0"
+    else:
+        filter_str = "All files\0*.*\0\0"
+
+    class _OPENFILENAMEW(ctypes.Structure):
+        _fields_ = [
+            ("lStructSize", wintypes.DWORD),
+            ("hwndOwner", wintypes.HWND),
+            ("hInstance", wintypes.HINSTANCE),
+            ("lpstrFilter", wintypes.LPCWSTR),
+            ("lpstrCustomFilter", wintypes.LPWSTR),
+            ("nMaxCustFilter", wintypes.DWORD),
+            ("nFilterIndex", wintypes.DWORD),
+            ("lpstrFile", wintypes.LPWSTR),
+            ("nMaxFile", wintypes.DWORD),
+            ("lpstrFileTitle", wintypes.LPWSTR),
+            ("nMaxFileTitle", wintypes.DWORD),
+            ("lpstrInitialDir", wintypes.LPCWSTR),
+            ("lpstrTitle", wintypes.LPCWSTR),
+            ("Flags", wintypes.DWORD),
+            ("nFileOffset", wintypes.WORD),
+            ("nFileExtension", wintypes.WORD),
+            ("lpstrDefExt", wintypes.LPCWSTR),
+            ("lCustData", wintypes.LPARAM),
+            ("lpfnHook", ctypes.c_void_p),
+            ("lpTemplateName", wintypes.LPCWSTR),
+            ("pvReserved", ctypes.c_void_p),
+            ("dwReserved", wintypes.DWORD),
+            ("FlagsEx", wintypes.DWORD),
+        ]
+
+    OFN_EXPLORER        = 0x00080000
+    OFN_FILEMUSTEXIST   = 0x00001000
+    OFN_HIDEREADONLY    = 0x00000004
+    OFN_NOCHANGEDIR     = 0x00000008
+    OFN_NONETWORKBUTTON = 0x00020000
+
+    ofn = _OPENFILENAMEW()
+    ofn.lStructSize = ctypes.sizeof(_OPENFILENAMEW)
+    ofn.lpstrFilter = filter_str
+    file_buf = ctypes.create_unicode_buffer(2048)
+    ofn.lpstrFile = ctypes.cast(file_buf, wintypes.LPWSTR)
+    ofn.nMaxFile = 2048
+    if initialdir:
+        ofn.lpstrInitialDir = str(initialdir)
+    ofn.lpstrTitle = title
+    ofn.Flags = (
+        OFN_EXPLORER
+        | OFN_FILEMUSTEXIST
+        | OFN_HIDEREADONLY
+        | OFN_NOCHANGEDIR
+        | OFN_NONETWORKBUTTON
+    )
+
+    try:
+        if ctypes.windll.comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
+            return file_buf.value
+        return ""
+    except Exception:
+        # Last-resort fallback if comdlg32 misbehaves on some weird Windows build.
+        return filedialog.askopenfilename(
+            title=title, initialdir=initialdir, filetypes=filetypes or [],
+        )
 
 
 # =====================================================================
@@ -331,7 +416,7 @@ class MeshServerGUI:
     def __init__(self, root: Tk):
         _log_event("MeshServerGUI.__init__ entered")
         self.root = root
-        root.title("ComfyUI Mesh : Daedalus — back-half server")
+        root.title("ComfyUI Mesh : Daedalus FLUX 2 — back-half server")
         root.geometry("780x560")
         _apply_dark_theme(root)
 
@@ -608,8 +693,8 @@ class MeshServerGUI:
     # ----- Actions -----
 
     def _on_browse(self):
-        path = filedialog.askopenfilename(
-            title="Pick the FLUX safetensors file",
+        path = _fast_askopenfilename(
+            title="Pick the FLUX 2 safetensors file",
             initialdir=str(HERE),
             filetypes=[("Safetensors", "*.safetensors"), ("All files", "*.*")],
         )
@@ -627,7 +712,7 @@ class MeshServerGUI:
             HERE,
         ]
         initial = next((str(p) for p in lora_dirs if p.is_dir()), str(HERE))
-        path = filedialog.askopenfilename(
+        path = _fast_askopenfilename(
             title="Pick a LoRA safetensors file (optional — Cancel to skip)",
             initialdir=initial,
             filetypes=[("Safetensors", "*.safetensors"), ("All files", "*.*")],

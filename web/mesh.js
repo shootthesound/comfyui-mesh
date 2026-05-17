@@ -247,7 +247,7 @@ function _helpHTML() {
       <em>red</em> = disconnected (server died or network gone),
       <em>grey</em> = idle (no queue this session yet).</li>
   <li>Refused / never connects: check the server is running
-      (run <code>run_server_gui.bat</code> on the back-half host),
+      (run <code>run_server_flux2_gui.bat</code> on the back-half host),
       the <code>remote_host</code> + <code>remote_port</code> match,
       and the server's port isn't blocked by a firewall.</li>
   <li>Server died mid-session: just re-queue. Transparent reconnect
@@ -313,8 +313,8 @@ function _helpHTML() {
   <li>Server install: <code>install.bat</code> in the server folder
       (one-shot — venv + ComfyUI clone + cu128 torch + deps).</li>
   <li>Server update: <code>update_comfy.bat</code> (the one above).</li>
-  <li>Server launch: <code>run_server_gui.bat</code> (recommended) or
-      <code>run_server.bat</code> (headless).</li>
+  <li>Server launch: <code>run_server_flux2_gui.bat</code> (recommended) or
+      <code>run_server_flux2.bat</code> (headless).</li>
 </ul>
 
 <h3>💬 Help / feedback</h3>

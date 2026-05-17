@@ -180,7 +180,8 @@ Then on the back-half host, in a terminal in the `server/` folder:
 
 3. Launch via the GUI (recommended for first run):
    ```
-   run_server_gui.bat
+   run_server_flux2_gui.bat     (FLUX 2)
+   run_server_ltx_gui.bat       (LTX-AV)
    ```
    Pick the model file, pick `n_blocks` (how many blocks to host —
    spinbox shows the range, default 4), pick port, click **Start
@@ -410,7 +411,7 @@ server jumping from ~1–2 s to ~5–10 s once a big LoRA is applied
 The server side ships **two** GUIs side-by-side in the same `server/`
 folder:
 
-- **`run_server_gui.bat`** — Daedalus for FLUX.2 (existing).
+- **`run_server_flux2_gui.bat`** — Daedalus for FLUX 2 (existing).
 - **`run_server_ltx_gui.bat`** — Daedalus LTX for LTX 2.3.
 
 Launch whichever matches the client node you're using. They have
@@ -461,9 +462,10 @@ match) without buying NVLink-capable cards.
    (usually `cuda:0`).
 3. Launch Daedalus **pinned to the OTHER GPU**:
    ```
-   run_server_gpu1.bat    # pins server to physical GPU 1
+   run_server_flux2_gpu1.bat   # pins FLUX 2 server to physical GPU 1
+   run_server_ltx_gpu1.bat     # or the LTX variant
    ```
-   (or `run_server_gpu0.bat` if ComfyUI is on GPU 1.) These set
+   (or the `_gpu0` equivalents if ComfyUI is on GPU 1.) These set
    `CUDA_VISIBLE_DEVICES` so the two processes don't fight over the
    same card.
 4. In the workflow, set `remote_host = 127.0.0.1` (loopback).
@@ -695,7 +697,7 @@ comfyui-mesh/
     ├── codec.py / protocol.py / vec_io.py / lora_io.py / payload_ltx.py / nvenc_pframe/  ← wire-contract mirrors (byte-identical to client)
     ├── smoke_test_server.py
     ├── install_check.py
-    └── run_server*.bat           ← launchers: run_server.bat / _gpu0 / _gpu1 / _cpu / _gui / _ltx_gui / install
+    └── run_server*.bat           ← launchers: run_server_flux2{,_gpu0,_gpu1,_cpu,_gui}.bat + run_server_ltx{,_gpu0,_gpu1,_cpu,_gui}.bat + install
 ```
 
 ---
