@@ -94,6 +94,15 @@ def build_synthetic_payload(diffusion, device, dtype):
     # feature_dim = 4 * v_dim, gate_timestep feature_dim = 1 * v_dim
     # (per get_av_ca_ada_values' num_scale_shift_values=4 default).
     n_ca_ss, n_ca_gate = 4, 1
+    # cross_attention_adaln=True adds prompt_scale_shift_table as a
+    # block param (shape (2, v_dim)). Its presence is the signal that
+    # we MUST provide v_prompt_timestep (and a_prompt_timestep) as
+    # real tensors instead of None — apply_cross_attention_adaln reshapes
+    # them as (B, T_prompt, 2*v_dim). When the block doesn't have the
+    # table, prompt_timestep is allowed to stay None.
+    has_v_prompt = hasattr(block0, "prompt_scale_shift_table")
+    has_a_prompt = hasattr(block0, "audio_prompt_scale_shift_table")
+    n_prompt = 2  # both prompt tables are shape (2, dim)
 
     # Plausible token counts. A modest size for fast forward.
     B = 1
@@ -158,8 +167,15 @@ def build_synthetic_payload(diffusion, device, dtype):
         "a_cross_scale_shift_timestep": make_ts(B, T_a, n_ca_ss, a_dim),
         "v_cross_gate_timestep": make_ts(B, T_v, n_ca_gate, v_dim),
         "a_cross_gate_timestep": make_ts(B, T_a, n_ca_gate, a_dim),
-        "v_prompt_timestep": None,
-        "a_prompt_timestep": None,
+        # prompt_timestep is required when cross_attention_adaln=True
+        # (block has prompt_scale_shift_table); otherwise None is fine.
+        # T_prompt = text-context token count, feature_dim = 2 * dim.
+        "v_prompt_timestep": (
+            make_ts(B, C_v, n_prompt, v_dim) if has_v_prompt else None
+        ),
+        "a_prompt_timestep": (
+            make_ts(B, C_a, n_prompt, a_dim) if has_a_prompt else None
+        ),
         "self_attention_mask": None,
         "transformer_options": {
             "run_vx": True,
