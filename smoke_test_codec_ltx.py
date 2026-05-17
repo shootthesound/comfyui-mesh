@@ -1,7 +1,7 @@
-"""Smoke test: Nvenc LTX codec round-trip.
+"""Smoke test: Nvenc LTX (5090 optimized) codec round-trip.
 
 Encodes a heavy-tailed synthetic tensor (mimicking LTX activations
-with sparse outliers) via the 'Nvenc LTX' codec mode, decodes, asserts
+with sparse outliers) via the 'Nvenc LTX (5090 optimized)' codec mode, decodes, asserts
 reconstruction error stays in tolerance. Compares against plain 'nvenc'
 + 'raw' for sanity.
 
@@ -26,7 +26,7 @@ import torch
 import codec
 
 
-# Tolerances tuned for the Nvenc LTX mode at qp=1 + tile_dim=8 on
+# Tolerances tuned for the Nvenc LTX (5090 optimized) mode at qp=1 + tile_dim=8 on
 # heavy-tailed bf16 activations. Picked from the empirical smoke-test
 # numbers we measured during development (mean ~0.018, max ~0.13 on
 # similar input). Set to ~2x those values to leave headroom for the
@@ -86,8 +86,8 @@ def main():
     results["raw"] = measure_round_trip(x, mode="raw")
     # nvenc (the lossy mode): expected to show contrast crush
     results["nvenc"] = measure_round_trip(x, mode="nvenc", qp=18, tile_dim=8)
-    # Nvenc LTX (the tuned mode): expected to behave near-raw
-    results["Nvenc LTX"] = measure_round_trip(x, mode="Nvenc LTX", qp=1, tile_dim=8)
+    # Nvenc LTX (5090 optimized) (the tuned mode): expected to behave near-raw
+    results["Nvenc LTX (5090 optimized)"] = measure_round_trip(x, mode="Nvenc LTX (5090 optimized)", qp=1, tile_dim=8)
 
     print()
     print(
@@ -114,31 +114,31 @@ def main():
     else:
         print("  OK: raw is bit-exact")
 
-    # Nvenc LTX must be within tolerance
-    nltx = results["Nvenc LTX"]
+    # Nvenc LTX (5090 optimized) must be within tolerance
+    nltx = results["Nvenc LTX (5090 optimized)"]
     if nltx["max_err"] > NVENC_LTX_MAX_TOL:
         print(
-            f"  FAIL Nvenc LTX: max_err {nltx['max_err']:.4f} exceeds tolerance "
+            f"  FAIL Nvenc LTX (5090 optimized): max_err {nltx['max_err']:.4f} exceeds tolerance "
             f"{NVENC_LTX_MAX_TOL}"
         )
         ok = False
     elif nltx["mean_err"] > NVENC_LTX_MEAN_TOL:
         print(
-            f"  FAIL Nvenc LTX: mean_err {nltx['mean_err']:.6f} exceeds tolerance "
+            f"  FAIL Nvenc LTX (5090 optimized): mean_err {nltx['mean_err']:.6f} exceeds tolerance "
             f"{NVENC_LTX_MEAN_TOL}"
         )
         ok = False
     else:
         print(
-            f"  OK: Nvenc LTX within tolerance (max {nltx['max_err']:.4f} <= "
+            f"  OK: Nvenc LTX (5090 optimized) within tolerance (max {nltx['max_err']:.4f} <= "
             f"{NVENC_LTX_MAX_TOL}, mean {nltx['mean_err']:.6f} <= {NVENC_LTX_MEAN_TOL})"
         )
 
-    # Sanity: Nvenc LTX should be meaningfully better than plain nvenc on this input
+    # Sanity: Nvenc LTX (5090 optimized) should be meaningfully better than plain nvenc on this input
     nv = results["nvenc"]
     if nltx["mean_err"] >= nv["mean_err"]:
         print(
-            f"  WARN: Nvenc LTX mean_err {nltx['mean_err']:.6f} >= plain nvenc "
+            f"  WARN: Nvenc LTX (5090 optimized) mean_err {nltx['mean_err']:.6f} >= plain nvenc "
             f"{nv['mean_err']:.6f}. Clipsparse should outperform plain nvenc on "
             f"heavy-tailed inputs."
         )
@@ -156,7 +156,7 @@ def main():
     print()
     if ok:
         print("=" * 60)
-        print("SMOKE TEST PASSED: codec round-trips correct, Nvenc LTX in tolerance")
+        print("SMOKE TEST PASSED: codec round-trips correct, Nvenc LTX (5090 optimized) in tolerance")
         print("=" * 60)
         sys.exit(0)
     else:

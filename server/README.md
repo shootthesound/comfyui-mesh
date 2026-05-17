@@ -67,7 +67,7 @@ server/
 │                                  Settings persist independently of the FLUX GUI's.
 │
 │ ─── wire-contract files (mirror client; MUST stay byte-identical) ───
-├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC, plus Nvenc LTX mode)
+├── codec.py                    ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC, plus "Nvenc LTX (5090 optimized)" mode)
 ├── protocol.py                 ← length-prefixed TCP framing
 ├── vec_io.py                   ← FLUX.2 vec/modulation tuple (de)serializer
 ├── payload_ltx.py              ← LTX-AV per-block payload (de)serializer

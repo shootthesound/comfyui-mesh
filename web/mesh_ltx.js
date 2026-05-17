@@ -300,14 +300,15 @@ function _helpHTML() {
 
 <h3>⚡ Codec mode</h3>
 <ul>
-  <li><code>Nvenc LTX</code> (default): the LTX-tuned codec.
+  <li><code>raw</code> (default): uncompressed bf16. The safe choice
+      on every wire — meaningfully slower than the codec only when
+      the wire is slower than codec encode/decode latency
+      (e.g. gigabit ethernet).</li>
+  <li><code>Nvenc LTX (5090 optimized)</code>: the LTX-tuned codec.
       Per-channel percentile-clip quant + sparse exact-correction of
       outliers. Near-raw quality, ~3× smaller than raw, roughly the
-      same wall-clock as raw on gigabit. <em>Use this.</em></li>
-  <li><code>raw</code>: uncompressed bf16. Useful as a quality
-      baseline; meaningfully faster than the codec only when the
-      wire is faster than codec encode/decode latency (PCIe between
-      two GPUs in the same machine).</li>
+      same wall-clock as raw on gigabit. Tuned and validated on
+      RTX 5090; behaviour on older NVENC generations is untested.</li>
   <li><code>nvenc</code>: plain NVENC HEVC, lighter wire bytes, but
       can show contrast crush on LTX activations. Kept for parity
       with the FLUX node; not recommended for LTX content.</li>

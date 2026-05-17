@@ -279,12 +279,14 @@ The LTX node has a deliberately smaller surface than the FLUX one:
 | `n_blocks_remote` | 8 | How many of LTX's 48 transformer_blocks run remotely. Increase = more offload, smaller client VRAM. |
 | `remote_host` | `127.0.0.1` | Hostname/IP of the back-half server |
 | `remote_port` | `7777` | TCP port |
-| `codec_mode` | `Nvenc LTX` | `Nvenc LTX` = LTX-tuned codec (NVENC HEVC + per-channel percentile-clip quant + sparse exact-correction of outliers; near-raw quality, ~3× smaller than raw, roughly the same wall-clock as raw on gigabit). `nvenc` = plain NVENC HEVC, lighter wire, can show contrast crush on LTX. `raw` = uncompressed bf16. |
+| `codec_mode` | `raw` | `raw` = uncompressed bf16 (default — safe on every wire). `Nvenc LTX (5090 optimized)` = LTX-tuned codec (NVENC HEVC + per-channel percentile-clip quant + sparse exact-correction of outliers; near-raw quality, ~3× smaller than raw, roughly the same wall-clock as raw on gigabit; tuned and validated on RTX 5090, behaviour on older NVENC generations untested). `nvenc` = plain NVENC HEVC, lighter wire, can show contrast crush on LTX. |
 | `forward_client_loras` | **OFF** | Same semantics as the FLUX node, but defaulted OFF on LTX because the LTX-AV 22B back-half is heavy enough that forwarding LoRAs can push <24 GB back-half cards into ComfyUI's dynamic-offload thrash regime (see warning below). Turn ON only if your back-half has 24+ GB free for LoRA buffers. |
 
-**Use `Nvenc LTX`** — it's the best speed/quality balance for the LTX
-node (the tuned settings are pinned internally). If you ever need to
-A/B against an uncompressed baseline, switch to `raw`. The plain
+**Default is `raw`** — uncompressed bf16, the safe choice on every
+wire. If your wire is gigabit ethernet (or slower) and you want to
+trade a small quality hit for a ~3× smaller wire, switch to
+`Nvenc LTX (5090 optimized)` — it's the tuned sweet spot for LTX
+activations (pinned settings, validated on RTX 5090). The plain
 `nvenc` option is kept for completeness but isn't recommended for
 LTX content.
 
@@ -674,7 +676,7 @@ comfyui-mesh/
 ├── __init__.py                   ← ComfyUI node registration + WEB_DIRECTORY
 ├── mesh_node.py                  ← MeshSplitFlux + /mesh/status + /mesh/reconfigure HTTP routes
 ├── mesh_node_ltx.py              ← MeshSplitLTX + /mesh/ltx/status + /mesh/ltx/reconfigure
-├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC, plus Nvenc LTX mode)
+├── codec.py                      ← tensor ↔ NVENC bitstream (per-channel uint8 + HEVC, plus "Nvenc LTX (5090 optimized)" mode)
 ├── protocol.py                   ← length-prefixed TCP framing
 ├── vec_io.py                     ← FLUX.2 vec/modulation tuple (de)serializer
 ├── payload_ltx.py                ← LTX-AV per-block payload (de)serializer (constants cache, PE 3-tuples, CompressedTimestep)

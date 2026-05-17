@@ -1253,20 +1253,24 @@ class MeshSplitLTX:
                                            )}),
                 "remote_port": ("INT", {"default": 7777, "min": 1, "max": 65535,
                                         "tooltip": "TCP port the back-half server is listening on. Default 7777."}),
-                "codec_mode": (["Nvenc LTX", "nvenc", "raw"], {"default": "Nvenc LTX",
+                "codec_mode": (["raw", "Nvenc LTX (5090 optimized)", "nvenc"], {"default": "raw",
                                                   "tooltip": (
                                                       "How activations get put on the wire. "
-                                                      "'Nvenc LTX' = LTX-tuned codec: NVENC HEVC + per-channel "
-                                                      "percentile-clip quant + sparse exact-correction of "
-                                                      "outliers. Near-raw quality, ~3× smaller than raw, "
-                                                      "roughly the same wall-clock as raw on gigabit. "
+                                                      "'raw' = uncompressed bf16. Default because it's the "
+                                                      "safe choice on every wire — only meaningfully slower "
+                                                      "than the codec when the wire is slower than codec "
+                                                      "encode/decode latency (e.g. gigabit ethernet). "
+                                                      "'Nvenc LTX (5090 optimized)' = LTX-tuned codec: NVENC "
+                                                      "HEVC + per-channel percentile-clip quant + sparse "
+                                                      "exact-correction of outliers. Near-raw quality, ~3× "
+                                                      "smaller than raw, roughly the same wall-clock as raw "
+                                                      "on gigabit. Tuned and validated on RTX 5090; behaviour "
+                                                      "on older NVENC generations is untested. "
                                                       "'nvenc' = plain NVENC HEVC (no outlier correction). "
-                                                      "Smaller bitstream than 'Nvenc LTX' but loses within-"
-                                                      "channel precision on heavy-tailed distributions — "
-                                                      "look for contrast crush before trusting it on LTX. "
-                                                      "'raw' = uncompressed bf16 — only meaningfully faster "
-                                                      "when the wire is faster than the codec encode/decode "
-                                                      "latency, e.g. PCIe between two GPUs in the same machine."
+                                                      "Smaller bitstream than 'Nvenc LTX (5090 optimized)' "
+                                                      "but loses within-channel precision on heavy-tailed "
+                                                      "distributions — look for contrast crush before "
+                                                      "trusting it on LTX."
                                                   )}),
                 "forward_client_loras": ("BOOLEAN", {"default": False,
                                                        "tooltip": (
@@ -1312,10 +1316,10 @@ class MeshSplitLTX:
     OUTPUT_NODE = False
 
     def configure(self, model, n_blocks_remote, remote_host, remote_port, codec_mode, forward_client_loras, unique_id=None, dynprompt=None):
-        # The LTX path uses fixed codec params — "Nvenc LTX" mode is the
-        # tuned sweet spot (qp=1 near-lossless on the bulk, lossless=False,
-        # tile_dim=8 max-throughput). Exposing those as separate inputs
-        # only invited misconfiguration.
+        # The LTX path uses fixed codec params — "Nvenc LTX (5090 optimized)"
+        # mode is the tuned sweet spot (qp=1 near-lossless on the bulk,
+        # lossless=False, tile_dim=8 max-throughput). Exposing those as
+        # separate inputs only invited misconfiguration.
         codec_qp = 1
         codec_lossless = False
         codec_tile_dim = 8
