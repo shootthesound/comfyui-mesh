@@ -279,7 +279,7 @@ The LTX node has a deliberately smaller surface than the FLUX one:
 | `remote_host` | `127.0.0.1` | Hostname/IP of the back-half server |
 | `remote_port` | `7777` | TCP port |
 | `codec_mode` | `Nvenc LTX` | `Nvenc LTX` = LTX-tuned codec (NVENC HEVC + per-channel percentile-clip quant + sparse exact-correction of outliers; near-raw quality, ~3× smaller than raw, roughly the same wall-clock as raw on gigabit). `nvenc` = plain NVENC HEVC, lighter wire, can show contrast crush on LTX. `raw` = uncompressed bf16. |
-| `forward_client_loras` | ON | Same semantics as the FLUX node |
+| `forward_client_loras` | **OFF** | Same semantics as the FLUX node, but defaulted OFF on LTX because the LTX-AV 22B back-half is heavy enough that forwarding LoRAs can push <24 GB back-half cards into ComfyUI's dynamic-offload thrash regime (see warning below). Turn ON only if your back-half has 24+ GB free for LoRA buffers. |
 
 **Use `Nvenc LTX`** — it's the best speed/quality balance for the LTX
 node (the tuned settings are pinned internally). If you ever need to
@@ -597,13 +597,16 @@ diffusion that would have happened anyway.
 
 ## Honest limits
 
-- **Only FLUX.2 family today.** Other architectures need per-model
-  code (block signatures, modulation, vec structure differ). Open to
-  contributions or sponsored work.
-- **Workflow ordering for client-LoRA forwarding**: LoraLoader must
-  come BEFORE `Icarus` in the graph. After-Mesh patches don't
-  propagate to the captured patcher reference. Tooltip on the node
-  warns about this.
+- **FLUX.2 and LTX 2.3 family today.** Other architectures (Wan,
+  FLUX.1, SD3.5, HunyuanVideo, etc.) need per-model code (block
+  signatures, modulation, vec structure differ). Open to contributions
+  or sponsored work.
+- **Workflow ordering for client-LoRA forwarding**: LoraLoader
+  position relative to `Icarus` / `Icarus LTX` controls intent.
+  BEFORE the mesh node + `forward_client_loras=ON` → LoRA covers the
+  whole model (front locally + back forwarded to server). AFTER the
+  mesh node → LoRA stays local. Tooltips on the nodes warn about
+  this.
 
   Correct (LoraLoader → Icarus → KSampler):
 
@@ -646,16 +649,17 @@ I'm a parent working from home, supporting a long-term ill child alongside my wi
 What more support unlocks:
 - **More model architectures.** Highest leverage targets:
   **Wan** (image + video, hugely popular ComfyUI workload),
-  **LTX-Video** (distilled video — long sequences + big activations
-  = ideal codec target), **FLUX.1** (small lift from FLUX.2),
+  **FLUX.1** (small lift from FLUX.2),
   **SD3.5**, **HunyuanVideo**, **Qwen-Image**, **Chroma**.
-- **Multi-LoRA server-side stacking** (multiple LoRA files + per-lora
-  strengths in the GUI / launchers)
+- **Multi-LoRA server-side stacking on FLUX** (the LTX server GUI
+  already has two LoRA slots — primary + distill — but the FLUX GUI
+  is still single-slot)
 - **Multi-client server mode** — rent your back-half GPU out
 - **CUDA-stream overlap** — codec hides behind compute for genuine
   wall-clock parity with all-local
-- **Activation pre-stage cache** — skip re-shipping unchanged `pe` /
-  `vec_orig` etc within a generation
+- **Activation pre-stage cache** — the LTX path already does this
+  (per-generation constants cache for context tensors + PE pairs);
+  porting to FLUX is the symmetric extension
 
 ---
 
