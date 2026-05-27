@@ -19,18 +19,29 @@ Usage flow for a one-shot HEVC decode:
 
 Platform notes:
 - Some fields in cuviddec.h declare `unsigned long` which differs by platform
-  (LLP64 Windows = 4 bytes, LP64 Linux = 8 bytes). On Windows we use c_uint32;
-  porting to Linux requires per-field review. Documented inline.
+  (LLP64 Windows = 4 bytes, LP64 Linux = 8 bytes). We alias `tcu_ulong` below
+  and use it for those fields, matching the typedef in `cuviddec.h` itself.
 """
 
 from __future__ import annotations
 
 import ctypes
 import platform
+import sys
 from ctypes import (
     Structure, POINTER, byref, c_int, c_uint, c_uint32, c_int32,
     c_short, c_uint8, c_ubyte, c_uint64, c_void_p, c_char_p, CFUNCTYPE,
 )
+
+# tcu_ulong = `unsigned long` in cuviddec.h. 4 bytes on Windows LLP64,
+# 8 bytes on Linux/macOS LP64. Used for the `ul*` fields in
+# CUVIDDECODECREATEINFO and the `flags`/`payload_size` fields in
+# CUVIDSOURCEDATAPACKET. Mismatching this on Linux makes the struct
+# short by ~68 bytes and segfaults cuvidCreateDecoder.
+if sys.platform == "win32":
+    tcu_ulong = ctypes.c_uint32
+else:
+    tcu_ulong = ctypes.c_ulong
 
 from .api import load_nvcuvid
 
@@ -83,7 +94,7 @@ CUVID_PKT_NOTIFY_EOS  = 0x10
 
 # ---- structures -----------------------------------------------------------
 # Note: `unsigned long` fields in the C header are 4 bytes on Windows LLP64
-# and 8 bytes on Linux LP64. We assume Windows here.
+# and 8 bytes on Linux LP64. We use the `tcu_ulong` alias defined above.
 
 
 class _DisplayArea(Structure):
@@ -107,28 +118,29 @@ class _TargetRect(Structure):
 class CUVIDDECODECREATEINFO(Structure):
     """Args struct for cuvidCreateDecoder."""
     _fields_ = [
-        # On Windows, `unsigned long` is 32 bits.
-        ("ulWidth", c_uint32),
-        ("ulHeight", c_uint32),
-        ("ulNumDecodeSurfaces", c_uint32),
-        ("CodecType", c_uint32),               # cudaVideoCodec
-        ("ChromaFormat", c_uint32),             # cudaVideoChromaFormat
-        ("ulCreationFlags", c_uint32),
-        ("bitDepthMinus8", c_uint32),
-        ("ulIntraDecodeOnly", c_uint32),
-        ("ulMaxWidth", c_uint32),
-        ("ulMaxHeight", c_uint32),
-        ("Reserved1", c_uint32),
+        # `ul*` and `bitDepthMinus8` / `ulIntraDecodeOnly` / `Reserved*` are
+        # `tcu_ulong` in cuviddec.h: 4 bytes on Windows, 8 bytes on Linux.
+        ("ulWidth", tcu_ulong),
+        ("ulHeight", tcu_ulong),
+        ("ulNumDecodeSurfaces", tcu_ulong),
+        ("CodecType", c_uint32),                # cudaVideoCodec (enum, 4 bytes)
+        ("ChromaFormat", c_uint32),             # cudaVideoChromaFormat (enum)
+        ("ulCreationFlags", tcu_ulong),
+        ("bitDepthMinus8", tcu_ulong),
+        ("ulIntraDecodeOnly", tcu_ulong),
+        ("ulMaxWidth", tcu_ulong),
+        ("ulMaxHeight", tcu_ulong),
+        ("Reserved1", tcu_ulong),
         ("display_area", _DisplayArea),         # 4 short = 8 bytes
-        ("OutputFormat", c_uint32),             # cudaVideoSurfaceFormat
-        ("DeinterlaceMode", c_uint32),          # cudaVideoDeinterlaceMode
-        ("ulTargetWidth", c_uint32),
-        ("ulTargetHeight", c_uint32),
-        ("ulNumOutputSurfaces", c_uint32),
+        ("OutputFormat", c_uint32),             # cudaVideoSurfaceFormat (enum)
+        ("DeinterlaceMode", c_uint32),          # cudaVideoDeinterlaceMode (enum)
+        ("ulTargetWidth", tcu_ulong),
+        ("ulTargetHeight", tcu_ulong),
+        ("ulNumOutputSurfaces", tcu_ulong),
         ("vidLock", c_void_p),                  # CUvideoctxlock
         ("target_rect", _TargetRect),
-        ("enableHistogram", c_uint32),
-        ("Reserved2", c_uint32 * 4),
+        ("enableHistogram", tcu_ulong),
+        ("Reserved2", tcu_ulong * 4),
     ]
 
 
@@ -180,8 +192,8 @@ class CUVIDEOFORMAT(Structure):
 class CUVIDSOURCEDATAPACKET(Structure):
     """Args struct for cuvidParseVideoData."""
     _fields_ = [
-        ("flags", c_uint32),                    # tcu_ulong on Windows = 4 bytes
-        ("payload_size", c_uint32),
+        ("flags", tcu_ulong),                   # 4 bytes Win, 8 bytes Linux
+        ("payload_size", tcu_ulong),
         ("payload", POINTER(c_uint8)),
         ("timestamp", CUvideotimestamp),
     ]
